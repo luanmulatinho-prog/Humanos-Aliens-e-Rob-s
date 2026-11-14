@@ -1,0 +1,3187 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Humanos, Aliens e Robôs</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #05060f; color: #e8ecff; font-family: system-ui, sans-serif; overflow: hidden; }
+  #stars { position: fixed; inset: 0; z-index: 0; }
+  .screen { position: relative; z-index: 1; height: 100%; display: none; flex-direction: column; align-items: center; justify-content: center; padding: 20px; gap: 14px; }
+  .screen.active { display: flex; }
+  h1 { font-size: 2rem; text-align: center; letter-spacing: 1px; text-shadow: 0 0 18px #6a7dff; }
+  .sub { opacity: .75; margin-bottom: 4px; text-align: center; font-size: .9rem; }
+  .card { width: 100%; max-width: 380px; background: rgba(20,24,52,.82); border: 1px solid #2c3578; border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 10px; backdrop-filter: blur(4px); }
+  input { width: 100%; padding: 13px; border-radius: 10px; border: 1px solid #3a4496; background: #0b0e24; color: #fff; font-size: 1rem; }
+  input.code { text-transform: uppercase; letter-spacing: 6px; text-align: center; font-size: 1.3rem; }
+  button { padding: 12px 14px; border: 0; border-radius: 10px; font-size: .95rem; font-weight: 600; color: #fff; background: linear-gradient(135deg, #5b6cff, #8a4dff); cursor: pointer; transition: opacity .15s, transform .1s; }
+  button.sec { background: #1c2252; border: 1px solid #3a4496; }
+  button.danger { background: #5c1c28; border: 1px solid #a83246; }
+  button.ok { background: linear-gradient(135deg, #2b8a3e, #40c057); }
+  button:active:not(:disabled) { transform: scale(.98); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .or { text-align: center; opacity: .5; font-size: .85rem; }
+  .msg { color: #ff8a9a; min-height: 1.2em; text-align: center; font-size: .9rem; }
+  .code-big { font-size: 2.4rem; letter-spacing: 10px; text-align: center; color: #9fb0ff; text-shadow: 0 0 14px #5b6cff; }
+  ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  li { background: #0b0e24; border: 1px solid #2c3578; border-radius: 10px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; }
+  li small { opacity: .65; }
+
+  /* Mapa 8x8 */
+  #grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; width: min(94vw, 430px); aspect-ratio: 1; }
+  .cell { display: flex; align-items: center; justify-content: center; font-size: clamp(1.05rem, 5.2vw, 1.65rem); background: rgba(14,18,44,.85); border: 1px solid #232b66; border-radius: 7px; cursor: pointer; }
+  .cell.estrela { background: radial-gradient(circle, #6b5a1a, #1a1630); border-color: #ffd54a; box-shadow: 0 0 10px #ffd54a77; }
+  .cell.planeta { border-color: #4fc3a1; background: rgba(20,60,60,.65); }
+  .cell.asteroides { border-color: #8a7b6a; background: rgba(50,42,36,.75); }
+  .cell.vazio { opacity: .55; }
+  .cell.sel { outline: 2px solid #fff; outline-offset: 1px; }
+  #actions { text-align: center; font-size: .9rem; min-height: 98px; justify-content: center; max-width: 430px; }
+  #actions .chips { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: center; font-size: .82rem; }
+  .planet-info { background: #0b0e24; border: 1px solid #2c3578; border-radius: 10px; padding: 8px 10px; font-size: .84rem; display: flex; flex-direction: column; gap: 3px; text-align: left; }
+  #legend { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: center; font-size: .8rem; opacity: .85; }
+  /* Tela do mapa rola e nenhum bloco encolhe, para o painel do planeta não ficar por cima dos botões */
+  #game { justify-content: flex-start; overflow-y: auto; padding-top: 14px; padding-bottom: 24px; }
+  #game > * { flex-shrink: 0; }
+
+  /* Seleção de Colonos */
+  #colonos { justify-content: flex-start; overflow-y: auto; padding-top: 14px; padding-bottom: 24px; }
+  #colonos > * { flex-shrink: 0; }
+  #colList { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; width: min(94vw, 430px); }
+  .colono { display: flex; flex-direction: column; gap: 5px; padding: 10px; background: rgba(20,24,52,.9); border: 1px solid #2c3578; border-radius: 12px; cursor: pointer; transition: border-color .15s, background .15s; }
+  .colono .ch { font-size: .88rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
+  .colono .avg-grid { display: grid; grid-template-columns: 1fr; gap: 4px; font-size: .75rem; }
+  .colono .avg-item { background: #0b0e24; border-radius: 6px; padding: 4px 6px; display: flex; justify-content: space-between; }
+  .colono.sel { border-color: #51cf66; box-shadow: 0 0 10px #51cf6688; background: rgba(26,64,46,.82); }
+  .colono.expanded { grid-column: 1 / -1; cursor: default; background: rgba(16,20,48,.96); border-color: #748ffc; }
+  .sector-box { background: #0b0e24; border: 1px solid #232b66; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .sector-title { font-size: .75rem; font-weight: 700; color: #9fb0ff; display: flex; justify-content: space-between; }
+  .srow { display: flex; justify-content: space-between; gap: 6px; font-size: .82rem; flex-wrap: wrap; }
+  .col-actions { display: flex; gap: 8px; margin-top: 4px; }
+  .col-actions button { flex: 1; padding: 9px; font-size: .85rem; }
+
+  /* Tela Principal da Colônia */
+  #colony { justify-content: space-between; padding: 14px; overflow-y: auto; }
+  .colony-top { width: 100%; max-width: 720px; display: flex; justify-content: space-between; align-items: flex-start; position: relative; min-height: 44px; }
+  .time-banner { margin: 0 auto; background: rgba(20,24,52,.9); border: 1px solid #3a4496; border-radius: 999px; padding: 8px 18px; font-weight: 700; font-size: 1rem; letter-spacing: .5px; box-shadow: 0 0 14px rgba(91,108,255,.35); }
+  .top-right-btns { position: absolute; right: 0; top: 0; display: flex; flex-direction: column; gap: 8px; z-index: 5; }
+  .icon-btn { width: 42px; height: 42px; padding: 0; border-radius: 12px; font-size: 1.25rem; display: flex; align-items: center; justify-content: center; background: rgba(20,24,52,.92); border: 1px solid #3a4496; }
+  .icon-btn.active { border-color: #748ffc; background: #232c6b; }
+  .floating-drawer { position: absolute; right: 50px; top: 0; width: min(78vw, 310px); background: rgba(13,17,40,.97); border: 1px solid #4c5bd4; border-radius: 14px; padding: 12px; z-index: 10; box-shadow: 0 10px 28px rgba(0,0,0,.65); display: flex; flex-direction: column; gap: 8px; font-size: .85rem; }
+  .colony-main { width: 100%; max-width: 720px; flex: 1; display: grid; grid-template-columns: 1fr; gap: 12px; align-items: stretch; margin: 10px 0; overflow-y: auto; }
+  .top-left-btns { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; gap: 8px; z-index: 5; }
+  .floating-drawer.left { right: auto; left: 50px; }
+  .floating-drawer { max-height: 72vh; overflow-y: auto; }
+  .dcol { background: #0b0e24; border: 1px solid #232b66; border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+  .dcol.open { border-color: #748ffc; }
+  .panel-box { background: rgba(20,24,52,.82); border: 1px solid #2c3578; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .panel-title { font-size: .82rem; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #9fb0ff; border-bottom: 1px solid #232b66; padding-bottom: 5px; }
+  .res-item { display: flex; justify-content: space-between; align-items: center; background: #0b0e24; border: 1px solid #232b66; border-radius: 8px; padding: 7px 10px; font-size: .88rem; }
+  .build-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 8px; }
+  .build-card { background: #0b0e24; border: 1px solid #2c3578; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center; }
+  .build-card .b-icon { font-size: 1.5rem; }
+  .build-card .b-name { font-size: .82rem; font-weight: 600; }
+  .build-card .b-count { font-size: .78rem; color: #748ffc; font-weight: 700; }
+  .build-card .b-cost { font-size: .72rem; opacity: .75; }
+  .build-empty { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 18px 10px; text-align: center; font-size: .9rem; border: 1px dashed #2c3578; border-radius: 12px; background: rgba(11,14,36,.5); }
+
+  /* Barra inferior: botão Tarefas (abre o menu para cima) + Próxima Estação */
+  .colony-bottom { position: relative; width: 100%; max-width: 720px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+  #btnTasks.active { border-color: #748ffc; background: #232c6b; }
+  .tasks-sheet { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; max-height: 62vh; overflow-y: auto; z-index: 8; background: rgba(13,17,40,.98); border: 1px solid #4c5bd4; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 -8px 28px rgba(0,0,0,.6); }
+  .cat-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cat-tab { flex: 1; min-width: 82px; padding: 8px 6px; font-size: .8rem; background: #14193d; border: 1px solid #2c3578; }
+  .cat-tab.active { background: linear-gradient(135deg, #5b6cff, #8a4dff); border-color: #9fb0ff; }
+  .sub-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sub-opt { padding: 7px 10px; font-size: .82rem; background: #0b0e24; border: 1px solid #3a4496; }
+  .sub-opt.active { border-color: #51cf66; background: rgba(30,75,52,.8); }
+  .assign-box { background: #0b0e24; border: 1px solid #2c3578; border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; font-size: .84rem; }
+  .assign-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; background: rgba(20,24,52,.8); padding: 6px 8px; border-radius: 8px; }
+  .next-season-wrap { display: flex; flex-direction: row; align-items: center; gap: 8px; margin-left: auto; }
+  .ready-counter { font-size: .82rem; font-weight: 700; color: #9fb0ff; background: rgba(20,24,52,.85); border: 1px solid #2c3578; border-radius: 8px; padding: 3px 10px; }
+
+  /* Faixa de tempo (planetas de clima fixo mostram duas linhas) */
+  .time-banner { text-align: center; }
+  .time-banner small { display: block; font-size: .72rem; font-weight: 600; opacity: .85; letter-spacing: 0; }
+
+  /* Avisos sutis da colônia */
+  .notice-bar { width: 100%; max-width: 720px; display: none; flex-direction: column; gap: 6px; background: rgba(30,36,84,.92); border: 1px solid #748ffc; border-radius: 12px; padding: 8px 10px; font-size: .85rem; margin-top: 8px; }
+  .notice-bar button { align-self: flex-end; padding: 4px 14px; font-size: .78rem; }
+
+  /* Gerenciador de construções */
+  .maint-line { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #0b0e24; border: 1px solid #232b66; border-radius: 8px; padding: 7px 10px; font-size: .82rem; }
+  .build-card.clickable { cursor: pointer; border-color: #51cf66; }
+  .build-card .b-hint { font-size: .68rem; opacity: .7; }
+
+  /* Plantações (menu em tela cheia) */
+  .modal { position: fixed; inset: 0; z-index: 30; background: rgba(3,4,12,.78); display: none; align-items: flex-end; justify-content: center; padding: 12px; }
+  .modal-sheet { width: 100%; max-width: 520px; max-height: 88vh; overflow-y: auto; background: rgba(13,17,40,.99); border: 1px solid #4c5bd4; border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .field-card { background: #0b0e24; border: 1px solid #2c3578; border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip-btn { padding: 6px 10px; font-size: .8rem; background: #14193d; border: 1px solid #3a4496; }
+  .chip-btn.active { border-color: #51cf66; background: rgba(30,75,52,.8); }
+
+  /* Alimentação e fome */
+  .res-item.selectable { cursor: pointer; }
+  .res-item.selected { border-color: #51cf66; background: rgba(30,75,52,.55); }
+  .hunger { font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .hunger.ok { color: #69db7c; border-color: #2b8a3e; }
+  .hunger.soon { color: #ffd43b; border-color: #a68a00; }
+  .hunger.hungry { color: #ff922b; border-color: #c2540a; }
+  .hunger.starving { color: #ff6b6b; border-color: #a83246; }
+
+  /* Pré-visualização dos setores na gaveta de colonos e ponto extra */
+  .dcol-avg { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; font-size: .74rem; margin-top: 4px; }
+  .dcol-avg div { background: #14193d; border-radius: 5px; padding: 2px 6px; display: flex; justify-content: space-between; }
+  .bonus-tag { color: #ffd54a; font-weight: 700; }
+  .pen-tag { color: #ff8a9a; font-weight: 700; }
+
+  /* Mapa da galáxia dentro da colônia */
+  .gmap-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; width: 100%; aspect-ratio: 1; }
+
+  /* Tela inicial: botões das raças */
+  #home { justify-content: flex-start; overflow-y: auto; padding-top: 6vh; padding-bottom: 24px; }
+  #home > * { flex-shrink: 0; }
+  .race-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .race-btn { flex: 1 1 30%; padding: 10px 6px; font-size: .82rem; }
+</style>
+</head>
+<body>
+<canvas id="stars"></canvas>
+
+<!-- TELA INICIAL -->
+<div id="home" class="screen active">
+  <h1>🪐 Humanos,<br>Aliens e Robôs</h1>
+  <p class="sub">Construa sua colônia espacial</p>
+  <div class="card">
+    <input id="name" placeholder="Seu nome" maxlength="16">
+    <button id="btnCreate">Criar sala</button>
+    <div class="or">— ou —</div>
+    <input id="joinCode" class="code" placeholder="CÓDIGO" maxlength="4">
+    <button id="btnJoin" class="sec">Entrar na sala</button>
+    <div class="msg" id="msg"></div>
+  </div>
+  <div class="card">
+    <strong style="text-align:center">Conheça as raças</strong>
+    <div class="race-row" id="raceRow"></div>
+  </div>
+</div>
+
+<!-- SALA (LOBBY) -->
+<div id="lobby" class="screen">
+  <p class="sub">Código da sala</p>
+  <div class="code-big" id="roomCode">----</div>
+  <div class="card">
+    <strong>Jogadores</strong>
+    <ul id="players"></ul>
+    <button id="btnStart">Iniciar partida</button>
+    <div class="sub" id="waitMsg" style="display:none">Aguardando o anfitrião iniciar...</div>
+    <button id="btnLeave" class="sec">Sair da sala</button>
+  </div>
+</div>
+
+<!-- MAPA DA GALÁXIA -->
+<div id="game" class="screen">
+  <h1 style="font-size:1.35rem">Mapa da galáxia</h1>
+  <div id="grid"></div>
+  <div id="legend"></div>
+  <div id="actions" class="card"></div>
+  <button id="btnColonos" style="display:none; width:100%; max-width:380px">Selecionar Colonos</button>
+  <div style="display:flex; gap:10px; width:100%; max-width:380px">
+    <button id="btnNewMap" class="sec" style="flex:1">Novo mapa</button>
+    <button id="btnLeaveGame" class="sec" style="flex:1">Sair</button>
+  </div>
+</div>
+
+<!-- SELEÇÃO DE COLONOS -->
+<div id="colonos" class="screen">
+  <h1 style="font-size:1.35rem">Selecionar Colonos</h1>
+  <div class="sub" id="colInfo"></div>
+  <div id="colList"></div>
+  <button id="btnConfirm" style="width:100%; max-width:380px">Confirmar escolha (0/3)</button>
+  <button id="btnStartMission" class="ok" style="display:none; width:100%; max-width:380px">Iniciar Missão</button>
+</div>
+
+<!-- TELA PRINCIPAL DA COLÔNIA -->
+<div id="colony" class="screen">
+  <div class="colony-top">
+    <div class="time-banner" id="seasonBanner">Ano 1 - Primavera 🌺</div>
+    <div class="top-left-btns">
+      <button id="btnToggleMateriais" class="icon-btn" title="Materiais">🪵</button>
+      <button id="btnToggleAlimentos" class="icon-btn" title="Alimentos">🍖</button>
+    </div>
+    <div class="top-right-btns">
+      <button id="btnTogglePlanet" class="icon-btn" title="Informações do Planeta">🪐</button>
+      <button id="btnToggleColonists" class="icon-btn" title="Lista de Colonos">🧑‍🚀</button>
+      <button id="btnToggleMap" class="icon-btn" title="Mapa da galáxia">🗺️</button>
+    </div>
+    <div id="drawerResources" class="floating-drawer left" style="display:none"></div>
+    <div id="drawerPlanet" class="floating-drawer" style="display:none"></div>
+    <div id="drawerColonists" class="floating-drawer" style="display:none"></div>
+  </div>
+
+  <div class="notice-bar" id="noticeBar"></div>
+
+  <div class="colony-main">
+    <div class="panel-box">
+      <div class="panel-title">Gerenciador de Construções</div>
+      <div id="colonyMaint" class="maint-line"></div>
+      <div id="colonyBuildings" class="build-grid"></div>
+      <div id="colonyAssignedSummary" style="margin-top:auto; display:flex; flex-direction:column; gap:4px; font-size:.82rem"></div>
+    </div>
+  </div>
+
+  <div id="farmModal" class="modal"></div>
+  <div id="buildingModal" class="modal"></div>
+  <div id="eventModal" class="modal" style="align-items:center"></div>
+  <div id="mapModal" class="modal"></div>
+
+  <div class="colony-bottom">
+    <div class="tasks-sheet" id="tasksSheet" style="display:none">
+      <div class="cat-tabs" id="catTabs"></div>
+      <div class="sub-opts" id="subOpts"></div>
+      <div id="assignBox" class="assign-box"></div>
+    </div>
+    <div class="tasks-sheet" id="workSheet" style="display:none"></div>
+    <button id="btnTasks" class="sec">📋 Tarefas ▲</button>
+    <button id="btnWork" class="sec">👷 Trabalho ▲</button>
+    <div class="next-season-wrap">
+      <div class="ready-counter" id="readyCounter">0/1</div>
+      <button id="btnNextSeason">Próxima Estação</button>
+    </div>
+  </div>
+</div>
+
+<!-- EXPLICAÇÃO DAS RAÇAS (tela inicial) -->
+<div id="raceModal" class="modal"></div>
+
+<script>
+/* ===== Fundo de estrelas ===== */
+const cv = document.getElementById('stars'), ctx = cv.getContext('2d');
+let starsBg = [];
+function resize() {
+  cv.width = innerWidth; cv.height = innerHeight;
+  starsBg = Array.from({ length: Math.floor(cv.width * cv.height / 3500) }, () => ({
+    x: Math.random() * cv.width, y: Math.random() * cv.height,
+    r: Math.random() * 1.4 + .2, s: Math.random() * 0.02 + 0.005, p: Math.random() * 6.28
+  }));
+}
+addEventListener('resize', resize); resize();
+(function draw(t) {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  for (const s of starsBg) {
+    ctx.globalAlpha = 0.35 + 0.65 * Math.abs(Math.sin(t * s.s + s.p));
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.283); ctx.fill();
+    s.y += s.r * 0.08; if (s.y > cv.height) { s.y = 0; s.x = Math.random() * cv.width; }
+  }
+  requestAnimationFrame(draw);
+})(0);
+
+/* ===== Camada de salas (localStorage + BroadcastChannel com ID por aba) ===== */
+const KEY = 'har_rooms_v2';
+const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('har_v2') : { postMessage() {}, onmessage: null };
+let tabId = sessionStorage.getItem('har_tab_id');
+if (!tabId) {
+  tabId = Math.random().toString(36).slice(2, 10);
+  sessionStorage.setItem('har_tab_id', tabId);
+}
+const me = { id: tabId, name: '' };
+let currentRoom = null;
+const COLORS = ['#ff6b6b', '#4dabf7', '#51cf66', '#ffd43b', '#cc5de8', '#ff922b'];
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+function save(r) {
+  try { localStorage.setItem(KEY, JSON.stringify(r)); } catch (e) {}
+  try { bc.postMessage('update'); } catch (e) {}
+}
+
+function createRoom(name) {
+  const rooms = load();
+  let code;
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  do {
+    code = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  } while (rooms[code]);
+  rooms[code] = {
+    host: me.id,
+    players: [{ id: me.id, name, color: COLORS[0] }]
+  };
+  save(rooms);
+  return code;
+}
+
+function joinRoom(code, name) {
+  const rooms = load(), r = rooms[code];
+  if (!r) return 'Sala não encontrada.';
+  if (r.players.length >= 6 && !r.players.some(p => p.id === me.id)) return 'Sala cheia.';
+  if (!r.players.some(p => p.id === me.id)) {
+    r.players.push({
+      id: me.id,
+      name,
+      color: COLORS.find(c => !r.players.some(p => p.color === c)) || COLORS[0]
+    });
+  }
+  save(rooms);
+  return null;
+}
+
+function leaveRoom(code) {
+  const rooms = load(), r = rooms[code];
+  if (!r) return;
+  r.players = r.players.filter(p => p.id !== me.id);
+  if (!r.players.length) delete rooms[code];
+  else if (r.host === me.id) r.host = r.players[0].id;
+  save(rooms);
+}
+
+/* ===== Interface e Navegação ===== */
+const $ = id => document.getElementById(id);
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  $(id).classList.add('active');
+}
+
+function renderLobby() {
+  const r = load()[currentRoom];
+  if (!r) { currentRoom = null; show('home'); return; }
+  if (r.started) {
+    if (r.phase === 'colonos') return renderColonos(r);
+    if (r.phase === 'colony') return renderColony(r);
+    return renderGame(r);
+  }
+  show('lobby');
+  const isHost = r.host === me.id;
+  $('btnStart').style.display = isHost ? '' : 'none';
+  $('waitMsg').style.display = isHost ? 'none' : '';
+  $('roomCode').textContent = currentRoom;
+  $('players').innerHTML = r.players.map(p =>
+    `<li><span>${esc(p.name)}</span><small>${p.id === r.host ? 'anfitrião' : ''}${p.id === me.id ? ' (você)' : ''}</small></li>`
+  ).join('');
+}
+
+function enter(code) {
+  currentRoom = code;
+  selected = null;
+  expandedColId = null;
+  show('lobby');
+  renderLobby();
+}
+
+/* ===== Mapa 8x8 e Planetas ===== */
+const N = 8;
+let selected = null;
+let picks = [], lastPhase = null, expandedColId = null;
+const esc = s => String(s).replace(/</g, '&lt;');
+const ICONS = { estrela: '⭐', planeta: '🪐', asteroides: '☄️', vazio: '' };
+const NAMES = { estrela: 'Estrela', planeta: 'Planeta', asteroides: 'Asteroides', vazio: 'Vazio' };
+const rnd = n => Math.floor(Math.random() * n);
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = rnd(i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const STAR_NAMES = [
+  'Solis', 'Vega', 'Altair', 'Sirius', 'Rigel', 'Lyra',
+  'Antares', 'Polaris', 'Aldebaran', 'Bellatrix', 'Canopus', 'Deneb'
+];
+
+function rollClimate() {
+  const roll = Math.random() * 100;
+  if (roll < 10) return 'Sempre Inverno';
+  if (roll < 30) return 'Frio';
+  if (roll < 70) return 'Temperado';
+  if (roll < 90) return 'Quente';
+  return 'Sempre Verão';
+}
+
+function rollOxygen() {
+  return ((1 + rnd(20)) * 5) + '%';
+}
+
+function rollResources() {
+  const list = ['Escassos', 'Concentrados', 'Diversos', 'Abundantes'];
+  return list[rnd(list.length)];
+}
+
+function generateGalaxy() {
+  const dist = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+  while (true) {
+    const g = Array.from({ length: N }, () => Array(N).fill('vazio'));
+    const cells = [];
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) cells.push([y, x]);
+    shuffle(cells);
+
+    // 1) Estrelas: de 2 a 4
+    const nStars = 2 + rnd(3);
+    const stars = cells.splice(0, nStars);
+    const namesPool = shuffle([...STAR_NAMES]);
+    const starNames = {};
+    stars.forEach(([y, x], idx) => {
+      g[y][x] = 'estrela';
+      starNames[y + ',' + x] = namesPool[idx % namesPool.length];
+    });
+
+    // 2) Planetas: de 10 a 16, a 2-5 quadrados de alguma estrela
+    const elig = cells.filter(c => stars.every(s => dist(c, s) >= 2) && stars.some(s => dist(c, s) <= 5));
+    const nPlanets = 10 + rnd(7);
+    if (elig.length < nPlanets) continue;
+
+    const planetMeta = {};
+    elig.slice(0, nPlanets).forEach(([y, x]) => {
+      g[y][x] = 'planeta';
+      // Designa à órbita da estrela mais próxima dentro do alcance (2-5)
+      const inRange = stars
+        .map(s => ({ s, d: dist([y, x], s) }))
+        .filter(item => item.d >= 2 && item.d <= 5)
+        .sort((a, b) => a.d - b.d);
+      const minD = inRange[0].d;
+      const closest = inRange.filter(item => item.d === minD);
+      const chosenStar = closest[rnd(closest.length)].s;
+      const orbitName = starNames[chosenStar[0] + ',' + chosenStar[1]];
+
+      planetMeta[y + ',' + x] = {
+        orbit: orbitName,
+        clima: rollClimate(),
+        oxigenio: rollOxygen(),
+        recursos: rollResources(),
+        luas: rnd(5)
+      };
+    });
+
+    // 3) Asteroides: 18% de chance nos espaços restantes
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        if (g[y][x] === 'vazio' && Math.random() < 0.18) g[y][x] = 'asteroides';
+      }
+    }
+    return { map: g, starNames, planetMeta };
+  }
+}
+
+function renderGame(r) {
+  show('game');
+  const cols = Object.fromEntries(r.players.map(p => [p.id, p.color || '#9fb0ff']));
+  const colonies = r.colonies || {};
+  $('grid').innerHTML = r.map.map((row, y) => row.map((t, x) => {
+    const owner = colonies[y + ',' + x];
+    const sel = selected && selected[0] === y && selected[1] === x ? ' sel' : '';
+    const style = owner ? ` style="border-color:${cols[owner]};box-shadow:0 0 10px ${cols[owner]}"` : '';
+    return `<div class="cell ${t}${sel}" data-y="${y}" data-x="${x}"${style}>${owner ? '🏠' : ICONS[t]}</div>`;
+  }).join('')).join('');
+
+  const count = {};
+  r.map.flat().forEach(t => count[t] = (count[t] || 0) + 1);
+  $('legend').innerHTML = Object.keys(NAMES).map(t => `<span>${ICONS[t] || '▫️'} ${NAMES[t]}: ${count[t] || 0}</span>`).join('');
+  $('btnNewMap').style.display = r.host === me.id ? '' : 'none';
+
+  const owners = Object.values(colonies);
+  const allFounded = r.players.every(p => owners.includes(p.id));
+  $('btnColonos').style.display = r.host === me.id ? '' : 'none';
+  $('btnColonos').disabled = !allFounded;
+  $('btnColonos').textContent = allFounded ? 'Selecionar Colonos' : 'Selecionar Colonos (faltam colônias)';
+
+  const chips = r.players.map(p =>
+    `<span style="color:${cols[p.id]}">● ${esc(p.name)}${owners.includes(p.id) ? ' 🏠' : ''}</span>`
+  ).join('');
+
+  let msg = '';
+  if (!selected) {
+    msg = 'Toque em um planeta para ver seus dados e fundar sua colônia.';
+  } else {
+    const [y, x] = selected;
+    const key = y + ',' + x;
+    const t = r.map[y][x];
+    const owner = colonies[key];
+
+    if (t === 'estrela') {
+      const sName = (r.starNames || {})[key] || 'Desconhecida';
+      msg = `⭐ Estrela <strong>${esc(sName)}</strong>`;
+    } else if (t !== 'planeta') {
+      msg = `${NAMES[t]}: só é possível fundar colônias em planetas.`;
+    } else {
+      const meta = (r.planetMeta || {})[key] || { orbit: 'Desconhecida', clima: 'Temperado', oxigenio: '50%', recursos: 'Diversos' };
+      const infoHtml = `
+        <div class="planet-info">
+          <div><strong>🪐 Planeta (${y + 1}, ${x + 1})</strong></div>
+          <div>🌟 <strong>Órbita:</strong> ${esc(meta.orbit)}</div>
+          <div>🌡️ <strong>Clima:</strong> ${esc(meta.clima)}</div>
+          <div>🫧 <strong>Oxigênio:</strong> ${esc(meta.oxigenio)}</div>
+          <div>⛏️ <strong>Recursos Naturais:</strong> ${esc(meta.recursos)}</div>
+        </div>
+      `;
+      if (owner) {
+        const ownerName = (r.players.find(p => p.id === owner) || {}).name || '???';
+        msg = infoHtml + `<div style="margin-top:6px">Colonizado por <strong>${esc(ownerName)}</strong>.</div>`;
+      } else if (owners.includes(me.id)) {
+        msg = infoHtml + `<div style="margin-top:6px">Você já fundou sua colônia.</div>`;
+      } else {
+        msg = infoHtml + `<button id="btnFound" style="margin-top:6px; width:100%">Fundar Colônia</button>`;
+      }
+    }
+  }
+
+  $('actions').innerHTML = `<div class="chips">${chips}</div><div>${msg}</div>`;
+  if ($('btnFound')) $('btnFound').onclick = foundColony;
+}
+
+function foundColony() {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || !selected) return;
+  const [y, x] = selected, key = y + ',' + x;
+  r.colonies = r.colonies || {};
+  if (r.map[y][x] !== 'planeta' || r.colonies[key] || Object.values(r.colonies).includes(me.id)) return;
+  r.colonies[key] = me.id;
+  save(rooms);
+  renderLobby();
+}
+
+$('grid').onclick = e => {
+  const c = e.target.closest('.cell');
+  if (!c) return;
+  selected = [+c.dataset.y, +c.dataset.x];
+  renderLobby();
+};
+
+function newMap() {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || r.host !== me.id) return;
+  const gal = generateGalaxy();
+  r.started = true;
+  r.map = gal.map;
+  r.starNames = gal.starNames;
+  r.planetMeta = gal.planetMeta;
+  r.colonies = {};
+  r.phase = null;
+  r.colonists = {};
+  r.chosen = {};
+  r.colonyStates = {};
+  r.seasonReady = {};
+  r.year = 1;
+  r.seasonIdx = 0;
+  selected = null;
+  save(rooms);
+  renderLobby();
+}
+
+/* ===== Colonos e Raças ===== */
+const SECTORS = [
+  { key: 'Combate', label: 'I. Combate' },
+  { key: 'Extração', label: 'II. Extração' },
+  { key: 'Criação', label: 'III. Criação' },
+  { key: 'Suporte', label: 'IV. Suporte' }
+];
+
+const AK47 = '<svg viewBox="0 0 32 14" width="1.7em" height="0.8em" fill="currentColor" style="vertical-align:-0.05em"><path d="M0 4.5h6.5v3L3 9.5H0z"/><rect x="6" y="4" width="14" height="3.2"/><rect x="20" y="4.6" width="6.5" height="2.6"/><rect x="26" y="5" width="6" height="1.2"/><rect x="20" y="3" width="7" height="0.9"/><path d="M12.5 7h3l-1 5.5h-2.8z"/><path d="M16.5 7H20c1 2.5 2.5 4.5 4 6l-2.5.8C19 12 17.2 10 16.5 7z"/></svg>';
+
+const STATS = [
+  { k: 'tiro', n: 'Tiro', i: AK47, cat: 'Combate' },
+  { k: 'corpo', n: 'Corpo a Corpo', i: '⚔️', cat: 'Combate' },
+  { k: 'caca', n: 'Caça', i: '🏹', cat: 'Combate' },
+  { k: 'agricultura', n: 'Agricultura', i: '🌾', cat: 'Extração' },
+  { k: 'lenha', n: 'Lenha', i: '🪓', cat: 'Extração' },
+  { k: 'mineracao', n: 'Mineração', i: '⛏️', cat: 'Extração' },
+  { k: 'construcao', n: 'Construção', i: '🏗️', cat: 'Criação' },
+  { k: 'fabricacao', n: 'Fabricação', i: '🔧', cat: 'Criação' },
+  { k: 'culinaria', n: 'Culinária', i: '🍳', cat: 'Criação' },
+  { k: 'medicina', n: 'Medicina', i: '💊', cat: 'Suporte' },
+  { k: 'inteligencia', n: 'Inteligência', i: '🧠', cat: 'Suporte' },
+  { k: 'curiosidade', n: 'Curiosidade', i: '🔍', cat: 'Suporte' }
+];
+
+const RACAS = {
+  Humano: {
+    tiro: [3, 7], corpo: [3, 7], caca: [3, 7],
+    agricultura: [5, 9], lenha: [4, 8], mineracao: [3, 7],
+    construcao: [3, 7], fabricacao: [3, 7], culinaria: [3, 7],
+    medicina: [3, 7], inteligencia: [4, 8], curiosidade: [6, 10]
+  },
+  'Robô': {
+    tiro: [6, 10], corpo: [1, 5], caca: [0, 4],
+    agricultura: [0, 4], lenha: [4, 8], mineracao: [5, 9],
+    construcao: [6, 10], fabricacao: [2, 6], culinaria: [1, 5],
+    medicina: [5, 9], inteligencia: [5, 9], curiosidade: [0, 4]
+  },
+  Drakthar: {
+    tiro: [2, 6], corpo: [6, 10], caca: [6, 10],
+    agricultura: [1, 5], lenha: [4, 8], mineracao: [5, 9],
+    construcao: [4, 8], fabricacao: [2, 6], culinaria: [2, 6],
+    medicina: [1, 5], inteligencia: [0, 4], curiosidade: [5, 9]
+  },
+  Floraks: {
+    tiro: [0, 4], corpo: [1, 5], caca: [0, 4],
+    agricultura: [4, 8], lenha: [3, 7], mineracao: [2, 6],
+    construcao: [1, 5], fabricacao: [5, 9], culinaria: [0, 4],
+    medicina: [6, 10], inteligencia: [5, 9], curiosidade: [3, 7]
+  },
+  Nebulians: {
+    tiro: [4, 8], corpo: [2, 6], caca: [4, 8],
+    agricultura: [4, 8], lenha: [3, 7], mineracao: [5, 9],
+    construcao: [3, 7], fabricacao: [3, 7], culinaria: [4, 8],
+    medicina: [4, 8], inteligencia: [2, 6], curiosidade: [2, 6]
+  }
+};
+
+const RACA_ICONS = {
+  Humano: '🧑‍🚀',
+  'Robô': '🤖',
+  Drakthar: '👹',
+  Floraks: '👽',
+  Nebulians: '👾'
+};
+
+/* Nomes sorteados para os colonos de cada raça.
+   Os nomes dos amigos (Luan, Lara, Antônio...) existem só entre os Humanos. */
+const COLONIST_NAMES = {
+  Humano: [
+    'Luan', 'Júlia', 'Antônio', 'Milla', 'Gabs', 'Letícia', 'JG', 'Pedro', 'Ana', 'Pintor', 'Thiago', 'Luiza', 'Sophia',
+    'Marcos', 'Camila', 'Rafael', 'Bianca', 'Davi', 'Helena', 'Caio', 'Isabela'
+  ],
+  'Robô': ['UNIT-7', 'R0-X', 'Axiom', 'Cog', 'Tera', 'Byte', 'Servo', 'Nexus', 'Pixel', 'Vox', 'Atlas', 'Echo', 'Orbit', 'Volt', 'Zeta'],
+  Drakthar: ['Korgath', 'Vrask', 'Dromak', 'Zurgul', 'Thragor', 'Brakka', 'Kaldur', 'Ormok', 'Gruzz', 'Skarn', 'Rhogar', 'Vulkra', 'Torrak', 'Dagrim', 'Baruk', 'Vargor'],
+  Floraks: ['Fiora', 'Lirael', 'Verdis', 'Sylvi', 'Orquídea', 'Musgo', 'Lótus', 'Alecrim', 'Jasmira', 'Cipó', 'Ipê', 'Tulipa', 'Hera', 'Seiva', 'Broto', 'Néctar'],
+  Nebulians: ['Nebu', 'Quasar', 'Cosmo', 'Zéfiro', 'Lumi', 'Astra', 'Nimbus', 'Oriona', 'Vesper', 'Halo', 'Pulsar', 'Aurion', 'Celeste', 'Bruma', 'Eclipse']
+};
+
+// Sorteia um nome da raça que ainda não foi usado neste grupo de colonos
+function pickName(raca, used) {
+  const all = COLONIST_NAMES[raca] || [raca];
+  const free = all.filter(n => !used.has(n));
+  let nome = (free.length ? free : all)[rnd((free.length ? free : all).length)];
+  if (!free.length) nome += ' ' + (used.size + 1);
+  used.add(nome);
+  return nome;
+}
+
+// Nome para mostrar (colonos antigos, sem nome, usam o formato genérico)
+const cName = c => esc(c.nome || `${c.raca} #${c.id + 1}`);
+
+function makeColonist(id, raca = 'Humano', nome = '') {
+  const c = { id, raca, nome };
+  STATS.forEach(s => {
+    const [a, b] = RACAS[raca][s.k];
+    c[s.k] = a + rnd(b - a + 1);
+  });
+  return c;
+}
+
+const makeColonists = () => {
+  const racas = Object.keys(RACAS);
+  const used = new Set();
+  return Array.from({ length: 12 }, (_, i) => {
+    const raca = racas[rnd(racas.length)];
+    return makeColonist(i, raca, pickName(raca, used));
+  });
+};
+
+function getSectorAvg(c, sectorKey) {
+  const items = STATS.filter(s => s.cat === sectorKey);
+  const sum = items.reduce((acc, s) => acc + c[s.k], 0);
+  return (sum / items.length).toFixed(1);
+}
+
+function colonistCardHtml(c, isPicked, isExpanded, isLocked) {
+  const badge = isPicked ? ' ✅' : '';
+  if (!isExpanded) {
+    return `
+      <div class="colono${isPicked ? ' sel' : ''}" data-id="${c.id}">
+        <div class="ch"><span>${RACA_ICONS[c.raca]} ${cName(c)}<br><small style="opacity:.6; font-weight:400">${c.raca}</small></span><span>${badge}</span></div>
+        <div class="avg-grid">
+          ${SECTORS.map(sec => `
+            <div class="avg-item">
+              <span>${sec.key}</span>
+              <strong>${getSectorAvg(c, sec.key)}</strong>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="colono expanded${isPicked ? ' sel' : ''}" data-id="${c.id}">
+      <div class="ch">
+        <span>${RACA_ICONS[c.raca]} ${cName(c)} <small style="opacity:.6; font-weight:400">· ${c.raca}</small>${badge}</span>
+        <button type="button" class="sec btn-close-col" style="padding:4px 10px; font-size:.78rem">Fechar ✕</button>
+      </div>
+      ${SECTORS.map(sec => `
+        <div class="sector-box">
+          <div class="sector-title">
+            <span>${sec.label}</span>
+            <span>Média: ${getSectorAvg(c, sec.key)}</span>
+          </div>
+          <div class="srow">
+            ${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${c[s.k]}</strong></span>`).join('')}
+          </div>
+        </div>
+      `).join('')}
+      ${!isLocked ? `
+        <div class="col-actions">
+          ${isPicked
+            ? `<button type="button" class="danger btn-remove-col" data-id="${c.id}">Remover</button>`
+            : `<button type="button" class="ok btn-recruit-col" data-id="${c.id}" ${picks.length >= 3 ? 'disabled' : ''}>Recrutar</button>`
+          }
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function startColonos() {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || r.host !== me.id) return;
+  const owners = Object.values(r.colonies || {});
+  if (!r.players.every(p => owners.includes(p.id))) return;
+  r.phase = 'colonos';
+  r.phaseId = Date.now();
+  r.colonists = {};
+  r.chosen = {};
+  r.players.forEach(p => r.colonists[p.id] = makeColonists());
+  save(rooms);
+  renderLobby();
+}
+
+function renderColonos(r) {
+  show('colonos');
+  if (lastPhase !== r.phaseId) {
+    lastPhase = r.phaseId;
+    picks = [];
+    expandedColId = null;
+  }
+  const mine = (r.colonists || {})[me.id];
+  const done = (r.chosen || {})[me.id];
+  if (!mine) {
+    $('colInfo').textContent = 'Você entrou depois do início desta fase.';
+    $('colList').innerHTML = '';
+    $('btnConfirm').style.display = 'none';
+    $('btnStartMission').style.display = 'none';
+    return;
+  }
+
+  const shown = done ? mine.filter(c => done.includes(c.id)) : mine;
+  const marked = done || picks;
+  $('colList').innerHTML = shown.map(c =>
+    colonistCardHtml(c, marked.includes(c.id), expandedColId === c.id, Boolean(done))
+  ).join('');
+
+  const total = r.players.length;
+  const doneCount = Object.keys(r.chosen || {}).length;
+  const allConfirmed = doneCount === total;
+
+  $('colInfo').textContent = done
+    ? (allConfirmed
+        ? (r.host === me.id ? 'Todos recrutaram seus colonos! Pronto para iniciar.' : 'Todos recrutaram! Aguardando o anfitrião iniciar a missão...')
+        : `Equipe recrutada! Aguardando jogadores (${doneCount}/${total})`)
+    : `Toque em um colono para inspecionar e recrutar (${picks.length}/3)`;
+
+  $('btnConfirm').style.display = done ? 'none' : '';
+  $('btnConfirm').disabled = picks.length !== 3;
+  $('btnConfirm').textContent = `Confirmar escolha (${picks.length}/3)`;
+
+  $('btnStartMission').style.display = (allConfirmed && r.host === me.id) ? '' : 'none';
+}
+
+$('colList').onclick = e => {
+  const r = load()[currentRoom];
+  if (!r) return;
+  const isLocked = Boolean((r.chosen || {})[me.id]);
+
+  if (e.target.closest('.btn-close-col')) {
+    expandedColId = null;
+    renderColonos(r);
+    return;
+  }
+
+  const recruitBtn = e.target.closest('.btn-recruit-col');
+  if (recruitBtn && !isLocked) {
+    const id = +recruitBtn.dataset.id;
+    if (!picks.includes(id) && picks.length < 3) picks.push(id);
+    expandedColId = null; // Fecha automaticamente após recrutar
+    renderColonos(r);
+    return;
+  }
+
+  const removeBtn = e.target.closest('.btn-remove-col');
+  if (removeBtn && !isLocked) {
+    const id = +removeBtn.dataset.id;
+    picks = picks.filter(i => i !== id);
+    renderColonos(r);
+    return;
+  }
+
+  const card = e.target.closest('.colono');
+  if (!card) return;
+  const id = +card.dataset.id;
+  if (expandedColId !== id) {
+    expandedColId = id;
+    renderColonos(r);
+  }
+};
+
+$('btnConfirm').onclick = () => {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || picks.length !== 3 || r.chosen[me.id]) return;
+  r.chosen[me.id] = picks.slice();
+  expandedColId = null;
+  save(rooms);
+  renderLobby();
+};
+
+$('btnStartMission').onclick = () => {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || r.host !== me.id) return;
+  if (Object.keys(r.chosen || {}).length !== r.players.length) return;
+
+  r.phase = 'colony';
+  r.year = 1;
+  r.seasonIdx = 0;
+  r.seasonReady = {};
+  r.colonyStates = {};
+  r.players.forEach(p => {
+    r.colonyStates[p.id] = {
+      resources: { madeira: 0, pedra: 0, carne: 0, trigo: 0, arroz: 0, algodao: 0, paes: 0, refeicoes: 0, refeicoesVeg: 0 },
+      buildings: { quarto: 0, casa: 0, vila: 0, plantacao: 0, padaria: 0, cozinha: 0, laboratorio: 0 },
+      assignments: {}, // { [colonistId]: actionKey }
+      pinned: {}       // colonos fixados: { [colonistId]: actionKey }
+    };
+  });
+  r.players.forEach(p => { ensureColonyState(r, p.id); syncSynergy(r, p.id); });
+  save(rooms);
+  renderLobby();
+};
+
+$('btnColonos').onclick = startColonos;
+
+/* ===== Tela Principal da Colônia ===== */
+const SEASONS = [
+  { name: 'Primavera', icon: '🌺' },
+  { name: 'Verão', icon: '☀️' },
+  { name: 'Outono', icon: '🍁' },
+  { name: 'Inverno', icon: '❄️' }
+];
+
+const RESOURCE_MODIFIERS = {
+  'Escassos': -2,
+  'Diversos': 0,
+  'Concentrados': 1,
+  'Abundantes': 2
+};
+
+const ACTION_CATEGORIES = [
+  {
+    key: 'recursos',
+    label: 'Recursos',
+    items: [
+      { key: 'cacar', label: '🏹 Caçar', stat: 'caca', res: 'carne' },
+      { key: 'cortar', label: '🪓 Cortar Árvores', stat: 'lenha', res: 'madeira' },
+      { key: 'minerar', label: '⛏️ Minerar Pedra', stat: 'mineracao', res: 'pedra' }
+    ]
+  },
+  {
+    key: 'construcao',
+    label: 'Construção',
+    items: [
+      { key: 'build_quarto', label: '🛏️ Quarto', building: 'quarto' },
+      { key: 'build_casa', label: '🏠 Casa', building: 'casa' },
+      { key: 'build_vila', label: '🏘️ Vila', building: 'vila' },
+      { key: 'build_plantacao', label: '🌱 Plantação', building: 'plantacao' },
+      { key: 'build_padaria', label: '🥖 Padaria', building: 'padaria' },
+      { key: 'build_cozinha', label: '🍳 Cozinha', building: 'cozinha' },
+      { key: 'build_laboratorio', label: '🔬 Laboratório', building: 'laboratorio' }
+    ]
+  },
+  {
+    key: 'expedicao',
+    label: 'Expedição',
+    items: [
+      { key: 'exp_exploracao', label: '🧭 Expedição de Exploração' },
+      { key: 'exp_comercial', label: '⚖️ Expedição Comercial' },
+      { key: 'exp_combate', label: '⚔️ Expedição de Combate' }
+    ]
+  }
+];
+
+const BUILDING_LIST = [
+  { key: 'quarto', label: 'Quarto', icon: '🛏️' },
+  { key: 'capsula', label: 'Cápsula de Emergência', icon: '🚀' },
+  { key: 'casa', label: 'Casa', icon: '🏠' },
+  { key: 'vila', label: 'Vila', icon: '🏘️' },
+  { key: 'plantacao', label: 'Plantação', icon: '🌱' },
+  { key: 'padaria', label: 'Padaria', icon: '🥖' },
+  { key: 'cozinha', label: 'Cozinha', icon: '🍳' },
+  { key: 'laboratorio', label: 'Laboratório', icon: '🔬' }
+];
+
+/* ===== Custos das ações =====
+   Cada colono designado a uma construção paga o custo na hora de ser designado.
+   Se ele for removido ou trocado de tarefa, o custo é devolvido. */
+const BUILD_COSTS = {
+  quarto: { madeira: 5 },
+  capsula: { madeira: 10, pedra: 15 },
+  casa: { madeira: 5, pedra: 5 },
+  vila: { madeira: 10, pedra: 10 },
+  plantacao: { madeira: 5 },
+  padaria: { madeira: 10, pedra: 5 },
+  cozinha: { madeira: 5, pedra: 10 },
+  laboratorio: { madeira: 20, pedra: 20 }
+};
+const RES_ICONS = { madeira: '🪵', pedra: '🪨', carne: '🥩', trigo: '🌾', arroz: '🍚', algodao: '🧶', paes: '🥖', refeicoes: '🍽️', refeicoesVeg: '🥗' };
+
+function actionCost(def) {
+  if (def && def.building === 'capsula') return {}; // Pago diretamente durante a execução da tarefa
+  return (def && def.building && BUILD_COSTS[def.building]) || {};
+}
+function costText(cost) {
+  return Object.entries(cost).map(([k, v]) => `${RES_ICONS[k]}${v}`).join(' ');
+}
+function canPay(res, cost) {
+  return Object.entries(cost).every(([k, v]) => (res[k] || 0) >= v);
+}
+function payCost(res, cost) {
+  Object.entries(cost).forEach(([k, v]) => { res[k] = (res[k] || 0) - v; });
+}
+function refundCost(res, cost) {
+  Object.entries(cost).forEach(([k, v]) => { res[k] = (res[k] || 0) + v; });
+}
+
+/* Habilidades que cada tarefa usa (mostradas nos colonos). As das expedições são provisórias. */
+const EXPEDITION_STATS = {
+  exp_exploracao: ['curiosidade', 'inteligencia'],
+  exp_comercial: ['inteligencia', 'fabricacao'],
+  exp_combate: ['tiro', 'corpo', 'caca']
+};
+function actionStats(def) {
+  if (!def) return [];
+  const keys = EXPEDITION_STATS[def.key] || (def.building ? ['construcao'] : (def.stat ? [def.stat] : []));
+  return keys.map(k => STATS.find(s => s.k === k)).filter(Boolean);
+}
+
+/* Designa um colono a uma ação nesta estação: devolve o custo da tarefa antiga e cobra a nova.
+   Retorna false (sem mudar nada) se não houver recursos para pagar. */
+function assignColonist(state, cid, actKey) {
+  if (state.assignments[cid] === actKey) return true;
+  if (actKey === 'assar_pao') {
+    const cap = state.buildings.padaria || 0;
+    const used = Object.entries(state.assignments || {}).filter(([k, v]) => k !== String(cid) && v === 'assar_pao').length;
+    if (used >= cap) return false;
+  }
+  const oldKey = state.assignments[cid];
+  const oldDef = oldKey ? findActionDef(oldKey) : null;
+  if (oldDef) refundCost(state.resources, actionCost(oldDef));
+  const cost = actionCost(findActionDef(actKey));
+  if (!canPay(state.resources, cost)) {
+    if (oldDef) payCost(state.resources, actionCost(oldDef));
+    return false;
+  }
+  payCost(state.resources, cost);
+  state.assignments[cid] = actKey;
+  delete state.pinFailed[cid];
+  return true;
+}
+
+/* ===== Tempo =====
+   Planetas "Sempre Verão" e "Sempre Inverno" não mostram as estações do ano:
+   o ano é contado normalmente e as estações viram "Primeira", "Segunda"... */
+const FIXED_CLIMATES = { 'Sempre Verão': '☀️', 'Sempre Inverno': '❄️' };
+const SEASON_ORDINALS = ['Primeira', 'Segunda', 'Terceira', 'Quarta'];
+
+/* ===== Avisos sutis da colônia ===== */
+function pushNotice(state, text) {
+  state.notices = state.notices || [];
+  state.notices.push(text);
+  if (state.notices.length > 6) state.notices.shift();
+}
+
+/* ===== Equipe e ponto extra de sintonia =====
+   6 colonos da mesma raça na colônia: cada um deles ganha +1 em uma habilidade aleatória.
+   Se a colônia deixar de ter 6 da raça, o ponto extra some. */
+
+const MAX_COLONISTS = 12;
+function getColonyCount(r, pid) {
+  return ((r.chosen || {})[pid] || []).length;
+}
+function canAddColonists(r, pid, count = 1) {
+  return getColonyCount(r, pid) + count <= MAX_COLONISTS;
+}
+
+const SYNERGY_MIN = 6;
+const SYNERGY_PLURAL = { Humano: 'humanos', 'Robô': 'robôs', Drakthar: 'drakthars', Floraks: 'floraks', Nebulians: 'nebulians' };
+const SYNERGY_FLAVOR = {
+  Humano: 'eles parecem estar em sintonia uns com os outros.',
+  'Robô': 'seus sistemas parecem pulsar em um mesmo compasso.',
+  Drakthar: 'eles trocam olhares de cumplicidade e rugidos baixos.',
+  Floraks: 'suas folhas parecem se mover no mesmo ritmo.',
+  Nebulians: 'eles parecem flutuar na mesma frequência.'
+};
+
+function teamOf(r, pid) {
+  const all = (r.colonists || {})[pid] || [];
+  const ids = (r.chosen || {})[pid] || [];
+  return all.filter(c => ids.includes(c.id));
+}
+
+// Penalidade de fome aplicada em todas as habilidades
+function hungerPenalty(state, c) {
+  const hs = hungerStatus(state, c);
+  if (hs.key === 'starving') return -3;
+  if (hs.key === 'hungry') return -1;
+  return 0;
+}
+
+function housingPenalty(state, c) {
+  return isHomeless(state, c) ? -2 : 0;
+}
+
+// Colono com ponto extra de sintonia, penalidade de fome e penalidade de desabrigado já aplicados
+function floraksClimateMod(raca, planetClima) {
+  if (raca !== 'Floraks') return 0;
+  if (planetClima === 'Sempre Inverno') return -1;
+  if (planetClima === 'Sempre Verão') return 1;
+  return 0;
+}
+
+function effectiveColonist(state, c, planet = null) {
+  const b = (state.bonuses || {})[c.id];
+  const hPen = hungerPenalty(state, c);
+  const housePen = housingPenalty(state, c);
+  const fMod = planet ? floraksClimateMod(c.raca, planet.clima) : 0;
+  const auroraMod = (state.auroraActive && c.raca !== 'Robô') ? 3 : 0;
+  const eclipseBoost = (state.eclipseBoost && (c.raca === 'Humano' || c.raca === 'Drakthar')) ? 5 : 0;
+
+  const out = {
+    ...c,
+    bonus: b || null,
+    hungerPen: hPen,
+    housingPen: housePen,
+    floraksMod: fMod,
+    auroraMod: auroraMod,
+    eclipseBoost: eclipseBoost
+  };
+
+  STATS.forEach(s => {
+    let eMod = (eclipseBoost && (s.cat === 'Criação' || s.cat === 'Suporte')) ? eclipseBoost : 0;
+    let val = out[s.k] + (b === s.k ? 1 : 0) + hPen + housePen + fMod + auroraMod + eMod;
+    out[s.k] = Math.max(0, val);
+  });
+  return out;
+}
+
+function syncSynergy(r, pid) {
+  const state = ensureColonyState(r, pid);
+  const groups = {};
+  teamOf(r, pid).forEach(c => (groups[c.raca] = groups[c.raca] || []).push(c));
+  Object.keys(RACAS).forEach(raca => {
+    const group = groups[raca] || [];
+    if (group.length >= SYNERGY_MIN) {
+      if (!state.synergy[raca]) {
+        state.synergy[raca] = true;
+        pushNotice(state, `Sua colônia reuniu ${group.length} ${SYNERGY_PLURAL[raca]}, ${SYNERGY_FLAVOR[raca]}`);
+      }
+      group.forEach(c => { if (!state.bonuses[c.id]) state.bonuses[c.id] = STATS[rnd(STATS.length)].k; });
+    } else {
+      delete state.synergy[raca];
+      // O ponto extra some para todos os colonos da raça, inclusive quem saiu da equipe
+      ((r.colonists || {})[pid] || []).filter(c => c.raca === raca).forEach(c => delete state.bonuses[c.id]);
+    }
+  });
+}
+
+/* ===== Manutenção anual das construções (paga no fim do inverno) ===== */
+const MAINT_COST = {
+  quarto: { madeira: 1 },
+  capsula: {},
+  casa: { madeira: 1, pedra: 1 },
+  vila: { madeira: 2, pedra: 2 },
+  plantacao: { madeira: 1 },
+  padaria: { madeira: 2, pedra: 1 },
+  cozinha: { madeira: 1, pedra: 2 },
+  laboratorio: { madeira: 4, pedra: 4 }
+};
+
+function maintenanceTotal(state) {
+  const tot = { madeira: 0, pedra: 0 };
+  BUILDING_LIST.forEach(b => {
+    const qty = state.buildings[b.key] || 0;
+    const mc = MAINT_COST[b.key] || {};
+    tot.madeira += qty * (mc.madeira || 0);
+    tot.pedra += qty * (mc.pedra || 0);
+  });
+  return tot;
+}
+
+function maintenanceText(tot) {
+  const parts = [];
+  if (tot.madeira > 0) parts.push(`🪵 ${tot.madeira}`);
+  if (tot.pedra > 0) parts.push(`🪨 ${tot.pedra}`);
+  return parts.length ? parts.join(' · ') : '🪵 0';
+}
+
+function payMaintenance(state) {
+  let tot = maintenanceTotal(state);
+  if (tot.madeira === 0 && tot.pedra === 0) return;
+  const collapsed = [];
+  while (tot.madeira > (state.resources.madeira || 0) || tot.pedra > (state.resources.pedra || 0)) {
+    const pool = [];
+    BUILDING_LIST.forEach(b => {
+      if (b.key === 'capsula') return; // Cápsula não pode ser destruída por falta de manutenção
+      const mc = MAINT_COST[b.key] || {};
+      const needsWood = tot.madeira > (state.resources.madeira || 0) && (mc.madeira || 0) > 0;
+      const needsStone = tot.pedra > (state.resources.pedra || 0) && (mc.pedra || 0) > 0;
+      if (needsWood || needsStone) {
+        for (let i = 0; i < (state.buildings[b.key] || 0); i++) pool.push(b);
+      }
+    });
+    if (!pool.length) break;
+    const b = pool[rnd(pool.length)];
+    state.buildings[b.key]--;
+    collapsed.push(b);
+    tot = maintenanceTotal(state);
+  }
+  state.resources.madeira = (state.resources.madeira || 0) - tot.madeira;
+  state.resources.pedra = (state.resources.pedra || 0) - tot.pedra;
+  syncFields(state);
+  syncBuildingsState(state);
+  if (collapsed.length) {
+    const list = collapsed.map(b => `${b.icon} ${b.label}`).join(', ');
+    pushNotice(state, collapsed.length === 1
+      ? `🏚️ Sem recursos para a manutenção, uma construção desabou: ${list}.`
+      : `🏚️ Sem recursos para a manutenção, algumas construções desabaram: ${list}.`);
+  }
+  if (tot.madeira > 0 || tot.pedra > 0) {
+    pushNotice(state, `🔧 Manutenção anual paga: ${maintenanceText(tot)}.`);
+  }
+}
+
+
+/* ===== Moradias e Construções Operacionais (Padaria, Cozinha, Laboratório) ===== */
+const HOUSING_CAP = { quarto: 1, casa: 3, vila: 6 };
+let activeBuildingModal = null; // 'housing' | 'padaria' | 'cozinha' | 'laboratorio' | null
+
+function syncBuildingsState(state) {
+  state.buildings = state.buildings || {};
+  state.housing = state.housing || {}; // { [colonistId]: 'quarto_0' | 'casa_1' | 'vila_0' }
+  state.kitchenRecipes = state.kitchenRecipes || {}; // { [kitchenIdx]: 'meal' | 'veg' }
+  state.labResearch = state.labResearch || {}; // { [labIdx]: topicKey }
+
+  // Remove moradores de habitações que deixaram de existir (ex: desabamento)
+  const validUnits = new Set();
+  Object.entries(HOUSING_CAP).forEach(([bKey, cap]) => {
+    const count = state.buildings[bKey] || 0;
+    for (let i = 0; i < count; i++) validUnits.add(`${bKey}_${i}`);
+  });
+  Object.keys(state.housing).forEach(cid => {
+    if (!validUnits.has(state.housing[cid])) delete state.housing[cid];
+  });
+
+  // Garante que cada unidade não ultrapasse sua lotação
+  const unitCounts = {};
+  Object.entries(state.housing).forEach(([cid, unitKey]) => {
+    const bKey = unitKey.split('_')[0];
+    const cap = HOUSING_CAP[bKey] || 0;
+    unitCounts[unitKey] = (unitCounts[unitKey] || 0) + 1;
+    if (unitCounts[unitKey] > cap) delete state.housing[cid];
+  });
+
+  // Limpa designações em padarias, cozinhas ou laboratórios que desabaram
+  [state.assignments, state.pinned].forEach(map => {
+    if (!map) return;
+    Object.keys(map).forEach(cid => {
+      const m = /^(bakery|kitchen|lab)_(\d+)$/.exec(map[cid]);
+      if (!m) return;
+      const bMap = { bakery: 'padaria', kitchen: 'cozinha', lab: 'laboratorio' };
+      const maxN = state.buildings[bMap[m[1]]] || 0;
+      if (+m[2] >= maxN) delete map[cid];
+    });
+  });
+}
+
+function isHomeless(state, c) {
+  return !(state.housing && state.housing[c.id]);
+}
+
+function getColonistHomeLabel(state, c) {
+  const u = (state.housing || {})[c.id];
+  if (!u) return 'Desabrigado (-2 hab.)';
+  const [bKey, idx] = u.split('_');
+  const names = { quarto: 'Quarto', casa: 'Casa', vila: 'Vila' };
+  return `${names[bKey] || bKey} #${+idx + 1}`;
+}
+
+function buildingModalHtml(state, team, locked) {
+  if (!activeBuildingModal) return '';
+
+  if (activeBuildingModal === 'housing') {
+    const units = [];
+    ['quarto', 'casa', 'vila'].forEach(bKey => {
+      const count = state.buildings[bKey] || 0;
+      const cap = HOUSING_CAP[bKey];
+      const meta = BUILDING_LIST.find(b => b.key === bKey);
+      for (let i = 0; i < count; i++) {
+        const uKey = `${bKey}_${i}`;
+        const residents = team.filter(c => (state.housing || {})[c.id] === uKey);
+        units.push({ bKey, uKey, label: `${meta.icon} ${meta.label} #${i + 1}`, cap, residents });
+      }
+    });
+
+    const homelessList = team.filter(c => isHomeless(state, c));
+    const unitsHtml = units.length ? units.map(u => {
+      const resHtml = u.residents.map(c => `
+        <div class="assign-row">
+          <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong></span>
+          <button type="button" class="danger btn-house-remove" data-cid="${c.id}" style="padding:4px 9px; font-size:.76rem">Remover</button>
+        </div>`).join('');
+
+      const validHomeless = homelessList.filter(c => {
+        if (u.bKey === 'quarto') return true;
+        if (u.residents.length === 0) return true;
+        return u.residents[0].raca === c.raca;
+      });
+
+      const canAdd = u.residents.length < u.cap && validHomeless.length > 0;
+      const addHtml = canAdd ? `
+        <div class="chip-row" style="margin-top:4px">
+          ${validHomeless.map(c => `<button type="button" class="ok btn-house-add" data-unit="${u.uKey}" data-cid="${c.id}" style="padding:4px 9px; font-size:.76rem">+ ${RACA_ICONS[c.raca]} ${cName(c)}</button>`).join('')}
+        </div>` : (u.bKey !== 'quarto' && u.residents.length > 0 && homelessList.length > 0 ? `<small style="color:#ffd43b; display:block; margin-top:4px">Casas e vilas exigem colonos da mesma raça (${u.residents[0].raca}).</small>` : '');
+
+      return `
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>${u.label}</strong>
+            <span class="hunger ${u.residents.length >= u.cap ? 'soon' : 'ok'}">${u.residents.length}/${u.cap} moradores</span>
+          </div>
+          ${resHtml || '<small style="opacity:.65">Nenhum morador designado.</small>'}
+          ${addHtml}
+        </div>`;
+    }).join('') : '<div style="opacity:.75; text-align:center">Nenhuma moradia construída ainda.</div>';
+
+    return `
+      <div class="modal-sheet">
+        <div style="display:flex; justify-content:space-between; align-items:center">
+          <strong>🏘️ Gerenciar Moradias</strong>
+          <button type="button" class="sec btn-bmodal-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+        </div>
+        <div style="font-size:.78rem; opacity:.8">
+          Colonos sem moradia ficam <strong>Desabrigados (-2 em todas as habilidades)</strong>.<br>
+          Capacidades: 🛏️ Quarto (1) · 🏠 Casa (3) · 🏘️ Vila (6).
+        </div>
+        ${homelessList.length ? `<div class="planet-info" style="border-color:#ff8a9a"><strong style="color:#ff8a9a">⚠️ Desabrigados (${homelessList.length}):</strong> ${homelessList.map(c => `${RACA_ICONS[c.raca]} ${cName(c)}`).join(', ')}</div>` : '<div class="planet-info" style="border-color:#51cf66"><strong style="color:#69db7c">✅ Todos os colonos estão abrigados!</strong></div>'}
+        ${unitsHtml}
+      </div>`;
+  }
+
+  if (activeBuildingModal === 'padaria') {
+    const n = state.buildings.padaria || 0;
+    const cards = Array.from({ length: n }, (_, i) => {
+      const key = 'bakery_' + i;
+      const workerId = Object.keys(state.assignments).find(cid => state.assignments[cid] === key);
+      const workers = team.map(c => {
+        const isWorker = String(c.id) === workerId;
+        const curAct = state.assignments[c.id];
+        const elsewhere = curAct && curAct !== key ? findActionDef(curAct) : null;
+        const pinned = (state.pinned || {})[c.id] === key;
+        const maxBread = (c.culinaria || 0) * 2;
+        return `
+          <div class="assign-row">
+            <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
+              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+              <small style="color:#9fb0ff">🍳 Culinária: <strong>${c.culinaria}</strong> · Limite: <strong>${maxBread} pães</strong> (🌾1 → 🥖2)</small>
+            </span>
+            <span style="display:flex; gap:5px; flex-shrink:0">
+              ${isWorker
+                ? `<button type="button" class="${pinned ? 'ok' : 'sec'} btn-bmodal-pin" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>📌${pinned ? ' Fixado' : ''}</button>
+                   <button type="button" class="danger btn-bmodal-clear" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>Remover</button>`
+                : `<button type="button" class="ok btn-bmodal-set" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>${elsewhere ? 'Trocar' : 'Assar Pão'}</button>`}
+            </span>
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>🥖 Padaria #${i + 1}</strong>
+            <span class="hunger ${workerId ? 'ok' : 'soon'}">${workerId ? 'Em operação' : 'Livre'}</span>
+          </div>
+          ${workers}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="modal-sheet">
+        <div style="display:flex; justify-content:space-between; align-items:center">
+          <strong>🥖 Padarias (${n})</strong>
+          <button type="button" class="sec btn-bmodal-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+        </div>
+        <div style="font-size:.78rem; opacity:.78">
+          Apenas <strong>1 colono</strong> por padaria. Cada <strong>1 Trigo (🌾)</strong> gera <strong>2 Pães (🥖)</strong>, até o limite de <strong>2× a Culinária</strong> do colono.
+        </div>
+        ${cards}
+      </div>`;
+  }
+
+  if (activeBuildingModal === 'cozinha') {
+    const n = state.buildings.cozinha || 0;
+    const cards = Array.from({ length: n }, (_, i) => {
+      const key = 'kitchen_' + i;
+      const recipe = (state.kitchenRecipes || {})[i] || 'meal';
+      const workerId = Object.keys(state.assignments).find(cid => state.assignments[cid] === key);
+      const workers = team.map(c => {
+        const isWorker = String(c.id) === workerId;
+        const curAct = state.assignments[c.id];
+        const elsewhere = curAct && curAct !== key ? findActionDef(curAct) : null;
+        const pinned = (state.pinned || {})[c.id] === key;
+        return `
+          <div class="assign-row">
+            <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
+              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+              <small style="color:#9fb0ff">🍳 Culinária: <strong>${c.culinaria}</strong> (até ${c.culinaria} porções)</small>
+            </span>
+            <span style="display:flex; gap:5px; flex-shrink:0">
+              ${isWorker
+                ? `<button type="button" class="${pinned ? 'ok' : 'sec'} btn-bmodal-pin" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>📌${pinned ? ' Fixado' : ''}</button>
+                   <button type="button" class="danger btn-bmodal-clear" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>Remover</button>`
+                : `<button type="button" class="ok btn-bmodal-set" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>${elsewhere ? 'Trocar' : 'Cozinhar'}</button>`}
+            </span>
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>🍳 Cozinha #${i + 1}</strong>
+            <span class="hunger ${workerId ? 'ok' : 'soon'}">${workerId ? 'Em operação' : 'Livre'}</span>
+          </div>
+          <div class="chip-row">
+            <button type="button" class="chip-btn btn-kitchen-recipe${recipe === 'meal' ? ' active' : ''}" data-idx="${i}" data-rec="meal" ${locked ? 'disabled' : ''}>🍽️ Refeição (🥩1 + 🍚1)</button>
+            <button type="button" class="chip-btn btn-kitchen-recipe${recipe === 'veg' ? ' active' : ''}" data-idx="${i}" data-rec="veg" ${locked ? 'disabled' : ''}>🥗 Ref. Vegetariana (🌾2)</button>
+          </div>
+          ${workers}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="modal-sheet">
+        <div style="display:flex; justify-content:space-between; align-items:center">
+          <strong>🍳 Cozinhas (${n})</strong>
+          <button type="button" class="sec btn-bmodal-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+        </div>
+        <div style="font-size:.78rem; opacity:.78">
+          Escolha a receita e designe um colono (1 por cozinha). Produz até o limite de <strong>Culinária</strong> do colono.
+        </div>
+        ${cards}
+      </div>`;
+  }
+
+  if (activeBuildingModal === 'laboratorio') {
+    const n = state.buildings.laboratorio || 0;
+    const topics = [
+      { key: 'agricultura_av', label: '🌱 Agronomia Avançada' },
+      { key: 'engenharia', label: '🏗️ Engenharia Colonial' },
+      { key: 'biotecnologia', label: '🧬 Biotecnologia' }
+    ];
+    const cards = Array.from({ length: n }, (_, i) => {
+      const key = 'lab_' + i;
+      const topic = (state.labResearch || {})[i] || topics[0].key;
+      const workerId = Object.keys(state.assignments).find(cid => state.assignments[cid] === key);
+      const workers = team.map(c => {
+        const isWorker = String(c.id) === workerId;
+        const curAct = state.assignments[c.id];
+        const elsewhere = curAct && curAct !== key ? findActionDef(curAct) : null;
+        const pinned = (state.pinned || {})[c.id] === key;
+        return `
+          <div class="assign-row">
+            <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
+              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+              <small style="color:#9fb0ff">🧠 Inteligência: <strong>${c.inteligencia}</strong></small>
+            </span>
+            <span style="display:flex; gap:5px; flex-shrink:0">
+              ${isWorker
+                ? `<button type="button" class="${pinned ? 'ok' : 'sec'} btn-bmodal-pin" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>📌${pinned ? ' Fixado' : ''}</button>
+                   <button type="button" class="danger btn-bmodal-clear" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>Remover</button>`
+                : `<button type="button" class="ok btn-bmodal-set" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>${elsewhere ? 'Trocar' : 'Pesquisar'}</button>`}
+            </span>
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>🔬 Laboratório #${i + 1}</strong>
+            <span class="hunger ${workerId ? 'ok' : 'soon'}">${workerId ? 'Pesquisando' : 'Livre'}</span>
+          </div>
+          <div class="chip-row">
+            ${topics.map(t => `<button type="button" class="chip-btn btn-lab-topic${topic === t.key ? ' active' : ''}" data-idx="${i}" data-topic="${t.key}" ${locked ? 'disabled' : ''}>${t.label}</button>`).join('')}
+          </div>
+          ${workers}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="modal-sheet">
+        <div style="display:flex; justify-content:space-between; align-items:center">
+          <strong>🔬 Laboratórios (${n})</strong>
+          <button type="button" class="sec btn-bmodal-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+        </div>
+        <div style="font-size:.78rem; opacity:.78">
+          Designe um cientista (1 por laboratório) para conduzir pesquisas usando <strong>Inteligência (🧠)</strong>.
+        </div>
+        ${cards}
+      </div>`;
+  }
+
+  return '';
+}
+
+/* ===== Plantações =====
+   Cada Plantação construída vira um campo.
+   - Campo vazio (stage: 'empty'): na Primavera (ou o ano todo em Sempre Verão), um colono pode plantar (trigo, arroz ou algodão).
+   - Campo plantado (stage: 'planted'): na estação seguinte (Verão, ou o ano todo em Sempre Verão), um colono pode colher.
+   - Colheita = Agricultura de quem plantou + Agricultura de quem colheu + modificador do clima (+3 Quente, +1 Temperado). */
+const CROPS = {
+  trigo: { label: '🌾 Trigo', res: 'trigo' },
+  arroz: { label: '🍚 Arroz', res: 'arroz' },
+  algodao: { label: '🧶 Algodão', res: 'algodao' }
+};
+const HARVEST_CLIMATE_MOD = { 'Quente': 3, 'Temperado': 1 };
+let farmOpen = false;
+
+function harvestClimateBonus(clima) {
+  return HARVEST_CLIMATE_MOD[clima] || 0;
+}
+
+function canPlantNow(clima, seasonIdx) {
+  if (clima === 'Sempre Verão') return true;
+  if (clima === 'Sempre Inverno') return false;
+  return (seasonIdx % 4) === 0; // Primavera
+}
+
+function canHarvestNow(clima, seasonIdx) {
+  if (clima === 'Sempre Verão') return true;
+  if (clima === 'Sempre Inverno') return false;
+  return (seasonIdx % 4) === 1; // Verão
+}
+
+function syncFields(state) {
+  state.fields = state.fields || [];
+  const n = state.buildings.plantacao || 0;
+  while (state.fields.length < n) {
+    state.fields.push({ stage: 'empty', crop: null, plantedSkill: 0, plantedBy: '' });
+  }
+  state.fields.forEach(f => {
+    if (!f.stage) f.stage = 'empty';
+    if (f.plantedSkill === undefined) f.plantedSkill = 0;
+  });
+  if (state.fields.length > n) {
+    state.fields.length = n;
+    [state.assignments, state.pinned].forEach(map => {
+      Object.keys(map).forEach(cid => {
+        const m = /^farm_(\d+)$/.exec(map[cid]);
+        if (m && +m[1] >= n) delete map[cid];
+      });
+    });
+  }
+}
+
+function clearField(state, i) {
+  const key = 'farm_' + i;
+  [state.assignments, state.pinned].forEach(map => {
+    Object.keys(map).forEach(cid => { if (map[cid] === key) delete map[cid]; });
+  });
+}
+
+function assignToField(state, i, cid) {
+  const key = 'farm_' + i;
+  [state.assignments, state.pinned].forEach(map => {
+    Object.keys(map).forEach(o => { if (map[o] === key && o !== String(cid)) delete map[o]; });
+  });
+  return assignColonist(state, cid, key);
+}
+
+function farmHtml(state, team, locked, planet, seasonIdx) {
+  const clima = planet.clima;
+  const climBonus = harvestClimateBonus(clima);
+  const allowPlant = canPlantNow(clima, seasonIdx);
+  const allowHarvest = canHarvestNow(clima, seasonIdx);
+
+  const cards = state.fields.map((f, i) => {
+    const key = 'farm_' + i;
+    const workerId = Object.keys(state.assignments).find(cid => state.assignments[cid] === key);
+    const isPlanted = f.stage === 'planted';
+    const cropObj = f.crop ? CROPS[f.crop] : null;
+
+    if (!isPlanted) {
+      // Estágio 1: Plantar
+      const crops = Object.entries(CROPS).map(([ck, cv]) =>
+        `<button type="button" class="chip-btn btn-crop${f.crop === ck ? ' active' : ''}" data-f="${i}" data-crop="${ck}" ${locked || !allowPlant ? 'disabled' : ''}>${cv.label}</button>`).join('');
+
+      let body = '';
+      if (!allowPlant) {
+        body = `<small style="color:#ffd43b">⏳ Só é possível plantar na Primavera${clima === 'Sempre Inverno' ? ' (planeta Sempre Inverno não permite plantio)' : ''}.</small>`;
+      } else if (!f.crop) {
+        body = '<small style="opacity:.65">Escolha o que plantar para designar um colono.</small>';
+      } else {
+        body = team.map(c => {
+          const isWorker = String(c.id) === workerId;
+          const curAct = state.assignments[c.id];
+          const elsewhere = curAct && curAct !== key ? findActionDef(curAct) : null;
+          return `
+            <div class="assign-row">
+              <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
+                <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+                <small style="color:#9fb0ff">🌾 Agricultura: <strong>${c.agricultura}</strong>${c.bonus === 'agricultura' ? '<span class="bonus-tag"> ✨+1</span>' : ''}${c.hungerPen ? `<span class="pen-tag"> (${c.hungerPen} fome)</span>` : ''}</small>
+              </span>
+              <span style="display:flex; gap:5px; flex-shrink:0">
+                ${isWorker
+                  ? `<button type="button" class="danger btn-field-clear" data-f="${i}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>Remover</button>`
+                  : `<button type="button" class="ok btn-field-set" data-f="${i}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>${elsewhere ? 'Trocar' : 'Plantar'}</button>`}
+              </span>
+            </div>`;
+        }).join('');
+      }
+
+      return `
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>🌱 Campo ${i + 1} · Vazio</strong>
+            <span class="hunger ok">Pronto para plantar</span>
+          </div>
+          <div class="chip-row">${crops}</div>
+          ${body}
+        </div>`;
+    } else {
+      // Estágio 2: Colher
+      let body = '';
+      if (!allowHarvest) {
+        body = `<small style="color:#ffd43b">⏳ Plantado (${cropObj ? cropObj.label : ''}). A colheita acontece no Verão.</small>`;
+      } else {
+        body = team.map(c => {
+          const isWorker = String(c.id) === workerId;
+          const curAct = state.assignments[c.id];
+          const elsewhere = curAct && curAct !== key ? findActionDef(curAct) : null;
+          const estYield = Math.max(0, (f.plantedSkill || 0) + (c.agricultura || 0) + climBonus);
+          return `
+            <div class="assign-row">
+              <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
+                <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+                <small style="color:#9fb0ff">🌾 Agr.: <strong>${c.agricultura}</strong> · Colheita est.: <strong>${estYield}</strong>${c.hungerPen ? `<span class="pen-tag"> (${c.hungerPen} fome)</span>` : ''}</small>
+              </span>
+              <span style="display:flex; gap:5px; flex-shrink:0">
+                ${isWorker
+                  ? `<button type="button" class="danger btn-field-clear" data-f="${i}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>Remover</button>`
+                  : `<button type="button" class="ok btn-field-set" data-f="${i}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>${elsewhere ? 'Trocar' : 'Colher'}</button>`}
+              </span>
+            </div>`;
+        }).join('');
+      }
+
+      return `
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>🌾 Campo ${i + 1} · ${cropObj ? cropObj.label : 'Plantado'}</strong>
+            <span class="hunger soon">Pronto para colher</span>
+          </div>
+          <div style="font-size:.78rem; opacity:.8">Plantado por <strong>${esc(f.plantedBy || 'Colono')}</strong> (Agr. ${f.plantedSkill})${climBonus ? ` · Clima ${clima}: +${climBonus}` : ''}</div>
+          ${body}
+        </div>`;
+    }
+  }).join('');
+
+  return `
+    <div class="modal-sheet">
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <strong>🌱 Plantações (${state.fields.length})</strong>
+        <button type="button" class="sec btn-farm-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+      </div>
+      <div style="font-size:.78rem; opacity:.75">
+        Plante na <strong>Primavera</strong> e colha no <strong>Verão</strong> (ou o ano todo em <em>Sempre Verão</em>).
+        Colheita = Agricultura de quem plantou + Agricultura de quem colheu${climBonus ? ` + ${climBonus} (${clima})` : ''}.
+      </div>
+      ${cards}
+    </div>`;
+}
+
+/* ===== Alimentação =====
+   Colonos precisam de refeições a cada 4 estações. A contagem começa na 1ª estação,
+   então ninguém fica faminto antes da 5ª estação (quando já existem 4 estações anteriores).
+   Nebulians consomem apenas Refeições Vegetarianas. */
+const MEALS_PER_YEAR = { Humano: 4, Nebulians: 6, Drakthar: 8, 'Robô': 0, Floraks: 0 };
+let mealSel = null; // 'meal' | 'veg' | null
+
+function mealData(state, c) {
+  state.meals = state.meals || {};
+  if (!state.meals[c.id]) {
+    state.meals[c.id] = { hist: [], now: 0 };
+  }
+  return state.meals[c.id];
+}
+
+function hungerStatus(state, c) {
+  const need = MEALS_PER_YEAR[c.raca] || 0;
+  if (!need) return { key: 'none', label: 'Não precisa se alimentar', cls: 'ok' };
+  const d = mealData(state, c);
+  const hist = d.hist || [];
+  const sum = hist.reduce((a, b) => a + b, 0);
+
+  if (hist.length >= 4) {
+    if (sum === 0) return { key: 'starving', label: 'Extremamente Faminto (-3 hab.)', cls: 'starving' };
+    if (sum < need) return { key: 'hungry', label: 'Faminto (-1 hab.)', cls: 'hungry' };
+    const nextSum = hist.slice(1).reduce((a, b) => a + b, 0) + d.now;
+    if (nextSum < need) return { key: 'soon', label: 'Prestes a ficar faminto', cls: 'soon' };
+  } else if (hist.length === 3) {
+    if (sum + d.now < need) return { key: 'soon', label: 'Prestes a ficar faminto', cls: 'soon' };
+  }
+  return { key: 'fed', label: 'Alimentado', cls: 'ok' };
+}
+
+function canEatMealType(c, type) {
+  const need = MEALS_PER_YEAR[c.raca] || 0;
+  if (!need) return false;
+  if (type === 'bread') return c.raca === 'Humano' || c.raca === 'Drakthar' || c.raca === 'Nebulians';
+  if (type === 'veg') return c.raca === 'Nebulians';
+  if (type === 'meal') return c.raca === 'Humano' || c.raca === 'Drakthar';
+  return false;
+}
+
+function feedColonist(state, c, type = 'meal') {
+  if (!canEatMealType(c, type)) return false;
+  const resKey = type === 'veg' ? 'refeicoesVeg' : (type === 'bread' ? 'paes' : 'refeicoes');
+  if ((state.resources[resKey] || 0) < 1) return false;
+  state.resources[resKey] -= 1;
+  mealData(state, c).now += 1;
+  return true;
+}
+
+function feedingHtml(state, team) {
+  if (!mealSel) {
+    return '<div style="font-size:.78rem; opacity:.65; text-align:center">Toque em 🍽️ Refeições, 🥗 Ref. Vegetarianas ou 🥖 Pães para alimentar seus colonos.</div>';
+  }
+  const metaMap = {
+    meal: { count: state.resources.refeicoes || 0, label: 'Refeições', hint: 'Use Cozinhar na aba Tarefas.' },
+    veg: { count: state.resources.refeicoesVeg || 0, label: 'Refeições Vegetarianas', hint: 'Use Refeição Vegetariana na aba Tarefas.' },
+    bread: { count: state.resources.paes || 0, label: 'Pães', hint: 'Construa uma Padaria e use Assar Pão.' }
+  };
+  const info = metaMap[mealSel] || metaMap.meal;
+  return `<div style="font-size:.8rem; opacity:.85">Alimentar com <strong>${info.label}</strong> (não ocupa o colono):${info.count < 1 ? `<br><span style="color:#ff8a9a">Sem ${info.label.toLowerCase()}. ${info.hint}</span>` : ''}</div>` +
+    team.map(c => {
+      const need = MEALS_PER_YEAR[c.raca] || 0;
+      const hs = hungerStatus(state, c);
+      const d = mealData(state, c);
+      const hist = d.hist || [];
+      const sum = hist.reduce((a, b) => a + b, 0);
+      const allowed = canEatMealType(c, mealSel);
+      let whyNot = '';
+      if (need && !allowed) {
+        if (mealSel === 'veg') whyNot = `${c.raca} não come refeição vegetariana`;
+        else if (mealSel === 'meal') whyNot = 'Nebulians não comem refeição com carne';
+      }
+      return `
+        <div class="assign-row">
+          <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
+            <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong></span>
+            <span class="hunger ${hs.cls}" style="align-self:flex-start">${hs.label}</span>
+            ${need ? `<small style="opacity:.7">Estações anteriores (${hist.length}/4): ${sum}/${need} · nesta: ${d.now}</small>` : ''}
+            ${whyNot ? `<small style="color:#ffd43b">${whyNot}</small>` : ''}
+          </span>
+          ${need ? `<button type="button" class="ok btn-feed" data-cid="${c.id}" data-type="${mealSel}" style="padding:5px 9px; font-size:.78rem; flex-shrink:0" ${(!allowed || info.count < 1) ? 'disabled' : ''}>Alimentar</button>` : ''}
+        </div>`;
+    }).join('');
+}
+
+let activeCat = 'recursos';
+let activeActionKey = null; // tarefa selecionada (os colonos só aparecem depois de escolher uma)
+let tasksOpen = false;      // menu Tarefas aberto/fechado
+let openDrawer = null; // 'materiais' | 'alimentos' | 'planet' | 'colonists' | null
+let drawerColId = null; // colono aberto na gaveta de colonos
+
+function colonistDetailsHtml(c) {
+  const bonusStat = c.bonus ? STATS.find(s => s.k === c.bonus) : null;
+  const notes = [];
+  if (bonusStat) {
+    notes.push(`<div class="bonus-tag" style="margin-top:5px; font-size:.78rem">✨ Ponto extra de sintonia: +1 em ${bonusStat.n}</div>`);
+  }
+  if (c.hungerPen) {
+    const label = c.hungerPen === -3 ? 'Extremamente Faminto' : 'Faminto';
+    notes.push(`<div class="pen-tag" style="margin-top:4px; font-size:.78rem">⚠️ ${label}: ${c.hungerPen} em todas as habilidades</div>`);
+  }
+  if (c.housingPen) {
+    notes.push(`<div class="pen-tag" style="margin-top:4px; font-size:.78rem">🏚️ Desabrigado: ${c.housingPen} em todas as habilidades</div>`);
+  }
+  if (c.floraksMod !== undefined && c.floraksMod !== 0) {
+    const cls = c.floraksMod > 0 ? 'bonus-tag' : 'pen-tag';
+    const txt = c.floraksMod > 0 ? '+1 (Clima Sempre Verão)' : '-1 (Clima Sempre Inverno)';
+    notes.push(`<div class="${cls}" style="margin-top:4px; font-size:.78rem">🌱 Floraks Clima: ${txt} em todas as habilidades</div>`);
+  }
+  if (c.auroraMod) {
+    notes.push(`<div class="bonus-tag" style="margin-top:4px; font-size:.78rem">🌌 Aurora Boreal: +3 em todas as habilidades</div>`);
+  }
+  if (c.eclipseBoost) {
+    notes.push(`<div class="bonus-tag" style="margin-top:4px; font-size:.78rem">🌑 Pós-Eclipse: +5 em Criação e Suporte</div>`);
+  }
+  return notes.join('') + SECTORS.map(sec => `
+    <div class="sector-box" style="margin-top:5px">
+      <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(c, sec.key)}</span></div>
+      <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => {
+        const isBonus = c.bonus === s.k;
+        const totalPen = (c.hungerPen || 0) + (c.housingPen || 0);
+        const hasPen = totalPen < 0;
+        const cls = hasPen ? 'pen-tag' : (isBonus ? 'bonus-tag' : '');
+        const tags = [isBonus ? '+1' : '', hasPen ? `${totalPen}` : ''].filter(Boolean).join(', ');
+        return `<span>${s.i} ${s.n}: <strong${cls ? ` class="${cls}"` : ''}>${c[s.k]}</strong>${tags ? ` <small class="${cls}">(${tags})</small>` : ''}</span>`;
+      }).join('')}</div>
+    </div>`).join('');
+}
+
+function findActionDef(actionKey) {
+  const fm = /^farm_(\d+)$/.exec(actionKey || '');
+  if (fm) return { key: actionKey, label: `🌱 Campo ${+fm[1] + 1}`, stat: 'agricultura', field: +fm[1], catKey: 'plantacao' };
+  const bm = /^bakery_(\d+)$/.exec(actionKey || '');
+  if (bm) return { key: actionKey, label: `🥖 Padaria #${+bm[1] + 1}`, stat: 'culinaria', bakery: +bm[1], catKey: 'padaria' };
+  const km = /^kitchen_(\d+)$/.exec(actionKey || '');
+  if (km) return { key: actionKey, label: `🍳 Cozinha #${+km[1] + 1}`, stat: 'culinaria', kitchen: +km[1], catKey: 'cozinha' };
+  const lm = /^lab_(\d+)$/.exec(actionKey || '');
+  if (lm) return { key: actionKey, label: `🔬 Laboratório #${+lm[1] + 1}`, stat: 'inteligencia', lab: +lm[1], catKey: 'laboratorio' };
+  if (actionKey === 'build_capsula') {
+    return { key: 'build_capsula', label: '🚀 Cápsula de Emergência', building: 'capsula', catKey: 'construcao' };
+  }
+  for (const cat of ACTION_CATEGORIES) {
+    if (!cat.items) continue;
+    const found = cat.items.find(i => i.key === actionKey);
+    if (found) return { ...found, catKey: cat.key };
+  }
+  return null;
+}
+
+function getPlayerPlanetMeta(r, playerId) {
+  const entry = Object.entries(r.colonies || {}).find(([, owner]) => owner === playerId);
+  if (!entry) return { orbit: 'Desconhecida', clima: 'Temperado', oxigenio: '50%', recursos: 'Diversos' };
+  return (r.planetMeta || {})[entry[0]] || { orbit: 'Desconhecida', clima: 'Temperado', oxigenio: '50%', recursos: 'Diversos' };
+}
+
+function getMyTeam(r) {
+  const all = (r.colonists || {})[me.id] || [];
+  const chosenIds = (r.chosen || {})[me.id] || [];
+  return all.filter(c => chosenIds.includes(c.id));
+}
+
+function ensureColonyState(r, playerId) {
+  r.colonyStates = r.colonyStates || {};
+  if (!r.colonyStates[playerId]) {
+    r.colonyStates[playerId] = {
+      resources: { madeira: 0, pedra: 0, carne: 0, trigo: 0, arroz: 0, algodao: 0, paes: 0, refeicoes: 0, refeicoesVeg: 0 },
+      buildings: { quarto: 0, casa: 0, vila: 0, plantacao: 0, padaria: 0, cozinha: 0, laboratorio: 0 },
+      assignments: {},
+      pinned: {}
+    };
+  }
+  const s = r.colonyStates[playerId];
+  s.pinned = s.pinned || {};       // { [colonistId]: actionKey } colonos fixados em uma ação
+  s.pinFailed = s.pinFailed || {}; // { [colonistId]: true } fixados que não puderam ser designados
+  s.meals = s.meals || {};         // histórico de refeições por colono
+  s.bonuses = s.bonuses || {};     // { [colonistId]: habilidade } ponto extra de sintonia racial
+  s.synergy = s.synergy || {};     // { [raça]: true } raças que já atingiram a sintonia
+  s.notices = s.notices || [];     // avisos para o jogador
+  syncFields(s);
+  syncBuildingsState(s);
+  return s;
+}
+
+function renderColony(r) {
+  show('colony');
+  const state = ensureColonyState(r, me.id);
+  const planet = getPlayerPlanetMeta(r, me.id);
+  const mod = RESOURCE_MODIFIERS[planet.recursos] ?? 0;
+  const modStr = mod >= 0 ? `+${mod}` : `${mod}`;
+  // Colonos já com o ponto extra de sintonia somado (quando existir)
+  const team = getMyTeam(r).map(c => effectiveColonist(state, c));
+
+  // Faixa de tempo: planetas de clima fixo mostram "Sempre Verão ☀️" e a estação por número
+  const sIdx = (r.seasonIdx || 0) % 4;
+  const fixedClimate = FIXED_CLIMATES[planet.clima];
+  $('seasonBanner').innerHTML = fixedClimate
+    ? `<small>${planet.clima} ${fixedClimate}</small>Ano ${r.year || 1} - ${SEASON_ORDINALS[sIdx]} Estação`
+    : `Ano ${r.year || 1} - ${SEASONS[sIdx].name} ${SEASONS[sIdx].icon}`;
+
+  // Gavetas do canto superior direito
+  $('btnTogglePlanet').classList.toggle('active', openDrawer === 'planet');
+  $('btnToggleColonists').classList.toggle('active', openDrawer === 'colonists');
+  $('btnToggleMateriais').classList.toggle('active', openDrawer === 'materiais');
+  $('btnToggleAlimentos').classList.toggle('active', openDrawer === 'alimentos');
+
+  if (openDrawer === 'planet') {
+    $('drawerPlanet').style.display = 'flex';
+    $('drawerPlanet').innerHTML = `
+      <strong>🪐 Dados do Planeta</strong>
+      <div>🌟 <strong>Órbita:</strong> ${esc(planet.orbit)}</div>
+      <div>🌡️ <strong>Clima:</strong> ${esc(planet.clima)}</div>
+      <div>🫧 <strong>Oxigênio:</strong> ${esc(planet.oxigenio)}</div>
+      <div>⛏️ <strong>Recursos Naturais:</strong> ${esc(planet.recursos)} (${modStr})</div>
+      <div>🌙 <strong>Luas:</strong> ${planet.luas !== undefined ? planet.luas : 0}</div>
+    `;
+  } else {
+    $('drawerPlanet').style.display = 'none';
+  }
+
+  if (openDrawer === 'colonists') {
+    $('drawerColonists').style.display = 'flex';
+    $('drawerColonists').innerHTML = `<strong>🧑‍🚀 Seus Colonos</strong>` + team.map(c => {
+      const assignedKey = state.assignments[c.id];
+      const actDef = assignedKey ? findActionDef(assignedKey) : null;
+      const hs = hungerStatus(state, c);
+      return `
+        <div class="dcol${drawerColId === c.id ? ' open' : ''}" data-cid="${c.id}">
+          <div style="display:flex; justify-content:space-between; font-weight:700;">
+            <span>${RACA_ICONS[c.raca]} ${cName(c)} <small style="opacity:.6; font-weight:400">${c.raca}</small></span>
+            <span style="font-size:.75rem; color:#9fb0ff">${actDef ? actDef.label : 'Livre'}${(state.pinned || {})[c.id] ? ' 📌' : ''}</span>
+          </div>
+          <div class="dcol-avg">${SECTORS.map(sec => `<div><span>${sec.key}</span><strong>${getSectorAvg(c, sec.key)}</strong></div>`).join('')}</div>
+          <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px">
+            ${hs.key !== 'none' ? `<span class="hunger ${hs.cls}">${hs.label}</span>` : ''}
+            <span class="hunger ${isHomeless(state, c) ? 'hungry' : 'ok'}">🏠 ${getColonistHomeLabel(state, c)}</span>
+          </div>
+          ${drawerColId === c.id ? colonistDetailsHtml(c) : '<div style="font-size:.7rem; opacity:.55; margin-top:3px">Toque para ver as qualidades</div>'}
+        </div>
+      `;
+    }).join('');
+  } else {
+    $('drawerColonists').style.display = 'none';
+  }
+
+  // Menu de Recursos (canto superior esquerdo): Materiais e Alimentos
+  const res = state.resources;
+  const resGroups = {
+    materiais: {
+      title: '🪵 Materiais',
+      items: [
+        ['🪵 Madeira', res.madeira],
+        ['🪨 Pedra', res.pedra],
+        ['🧶 Algodão', res.algodao]
+      ]
+    },
+    alimentos: {
+      title: '🍖 Alimentos',
+      items: [
+        ['🥩 Carne', res.carne],
+        ['🌾 Trigo', res.trigo],
+        ['🍚 Arroz', res.arroz],
+        ['🥖 Pães', res.paes, 'bread'],
+        ['🍽️ Refeições', res.refeicoes, 'meal'],
+        ['🥗 Ref. Vegetarianas', res.refeicoesVeg, 'veg']
+      ]
+    }
+  };
+  const grp = resGroups[openDrawer];
+  if (grp) {
+    $('drawerResources').style.display = 'flex';
+    $('drawerResources').innerHTML = `<strong>${grp.title}</strong>` +
+      grp.items.map(([n, v, k]) => k
+        ? `<div class="res-item selectable btn-meal${mealSel === k ? ' selected' : ''}" data-mtype="${k}"><span>${n}</span><strong>${v || 0}</strong></div>`
+        : `<div class="res-item"><span>${n}</span><strong>${v || 0}</strong></div>`).join('') +
+      (openDrawer === 'alimentos' ? feedingHtml(state, team) : '');
+  } else {
+    $('drawerResources').style.display = 'none';
+  }
+
+  // Painel Central: Gerenciador de Construções + Resumo da Estação
+  const bld = state.buildings;
+  // Só aparecem as construções que já existem; sem nenhuma, mostra uma mensagem
+  const built = BUILDING_LIST.filter(b => (bld[b.key] || 0) > 0);
+  $('colonyBuildings').innerHTML = built.length
+    ? built.map(b => `
+    <div class="build-card clickable" data-b="${b.key}">
+      <div class="b-icon">${b.icon}</div>
+      <div class="b-name">${b.label}</div>
+      <div class="b-count">× ${bld[b.key]}</div>
+      <div class="b-hint">Toque para gerenciar</div>
+    </div>
+  `).join('')
+    : `<div class="build-empty">
+         <div style="font-size:1.8rem">🌌</div>
+         <div>Nada foi erguido ainda.</div>
+         <div style="opacity:.65; font-size:.8rem">Os primeiros abrigos da sua colônia aparecerão aqui.</div>
+       </div>`;
+
+  // Custo total de manutenção, sempre visível
+  $('colonyMaint').innerHTML = `
+    <span>🔧 Manutenção anual <small style="opacity:.65">(paga ${fixedClimate ? 'no fim do ano' : 'no fim do inverno'})</small></span>
+    <strong>${maintenanceText(maintenanceTotal(state))}</strong>`;
+
+  const assignedEntries = Object.entries(state.assignments || {});
+  $('colonyAssignedSummary').innerHTML = assignedEntries.length
+    ? `<div class="panel-title" style="margin-top:6px">Tarefas desta Estação</div>` + assignedEntries.map(([cid, aKey]) => {
+        const col = team.find(c => c.id === +cid);
+        const def = findActionDef(aKey);
+        if (!col || !def) return '';
+        return `<div style="display:flex; justify-content:space-between; background:#0b0e24; padding:5px 8px; border-radius:6px;">
+          <span>${RACA_ICONS[col.raca]} ${cName(col)}</span>
+          <span>${def.label}${(state.pinned || {})[cid] === aKey ? ' 📌' : ''}</span>
+        </div>`;
+      }).join('')
+    : `<div style="opacity:.6; text-align:center; padding-top:6px">Nenhum colono designado nesta estação.</div>`;
+
+  // Menu Inferior: Abas de Categorias
+  $('catTabs').innerHTML = ACTION_CATEGORIES.map(cat => `
+    <button type="button" class="cat-tab${activeCat === cat.key ? ' active' : ''}" data-cat="${cat.key}" ${cat.disabled ? 'disabled' : ''}>
+      ${cat.disabled ? `🔒 ${cat.label}` : cat.label}
+    </button>
+  `).join('');
+
+  const currentCat = ACTION_CATEGORIES.find(c => c.key === activeCat) || ACTION_CATEGORIES[0];
+  if (!currentCat.items || !currentCat.items.some(i => i.key === activeActionKey)) {
+    activeActionKey = null; // nenhuma tarefa selecionada: colonos ficam escondidos
+  }
+
+  let catItems = [...(currentCat.items || [])];
+  if (currentCat.key === 'construcao' && state.visitorAccepted && !(state.buildings.capsula > 0)) {
+    catItems.push({ key: 'build_capsula', label: '🚀 Cápsula de Emergência (4 est.)', building: 'capsula' });
+  }
+  if (!catItems.some(i => i.key === activeActionKey)) {
+    activeActionKey = null;
+  }
+  $('subOpts').innerHTML = catItems.map(item => {
+    const cost = costText(actionCost(item));
+    return `
+    <button type="button" class="sub-opt${activeActionKey === item.key ? ' active' : ''}" data-act="${item.key}">
+      ${item.label}${cost ? ` · ${cost}` : ''}
+    </button>
+  `;
+  }).join('');
+
+  // Designação de Colonos para a Ação/Expedição selecionada
+  const actDef = findActionDef(activeActionKey);
+  const ready = Boolean((r.seasonReady || {})[me.id]);
+
+  if (!actDef) {
+    $('assignBox').innerHTML = `<div style="opacity:.7; text-align:center">Escolha uma tarefa acima para ver os colonos.</div>`;
+  } else {
+    const newCost = actionCost(actDef);
+    const newCostTxt = costText(newCost);
+    const actStats = actionStats(actDef);
+    const skillsTitle = actStats.length ? actStats.map(s => `${s.i} ${s.n}`).join(' · ') : 'nenhuma específica';
+    const isBakery = actDef.key === 'assar_pao';
+    const bakeryCap = state.buildings.padaria || 0;
+    const bakeryUsed = Object.values(state.assignments || {}).filter(k => k === 'assar_pao').length;
+    const bakeryFull = isBakery && bakeryUsed >= bakeryCap;
+    const bakeryInfo = isBakery
+      ? `<div style="font-size:.78rem; color:${bakeryCap ? '#9fb0ff' : '#ff8a9a'}">🥖 Padarias: ${bakeryUsed}/${bakeryCap} ocupadas (1 colono por padaria · limite: 2× Culinária)</div>`
+      : '';
+
+    $('assignBox').innerHTML = `
+      <div style="font-weight:700; color:#9fb0ff">Designar colono para: ${actDef.label}${newCostTxt ? ` <span style="font-weight:400">(custo por colono: ${newCostTxt})</span>` : ''}</div>
+      <div style="font-size:.8rem; opacity:.85">Habilidades da tarefa: ${skillsTitle}</div>
+      ${bakeryInfo}
+      ${team.map(c => {
+        const curAct = state.assignments[c.id];
+        const isThis = curAct === actDef.key;
+        const curDef = curAct ? findActionDef(curAct) : null;
+        const skillsHtml = actStats.length
+          ? `<small style="color:#9fb0ff">${actStats.map(s => `${s.i} ${s.n}: <strong>${c[s.k]}</strong>${c.bonus === s.k ? '<span class="bonus-tag"> ✨+1</span>' : ''}${c.hungerPen ? `<span class="pen-tag"> (${c.hungerPen} fome)</span>` : ''}`).join(' · ')}${isBakery ? ` · Limite: <strong>${c.culinaria * 2} pães</strong>` : ''}</small>`
+          : '<small style="opacity:.6">Sem habilidade específica</small>';
+        const eff = { ...state.resources };
+        if (curDef) refundCost(eff, actionCost(curDef));
+        const affordable = canPay(eff, newCost);
+        const isCapsule = actDef.key === 'build_capsula';
+        const capsuleSkillOk = !isCapsule || ((c.construcao || 0) >= 5 && (c.fabricacao || 0) >= 5);
+        const capsuleOccupied = isCapsule && !isThis && Object.values(state.assignments || {}).includes('build_capsula');
+        const eclipseBlocked = state.eclipseActive && (c.raca === 'Humano' || c.raca === 'Drakthar');
+        const slotBlocked = !isThis && (bakeryFull || !capsuleSkillOk || capsuleOccupied || eclipseBlocked);
+        const pinKey = state.pinned[c.id];
+        const pinDef = pinKey ? findActionDef(pinKey) : null;
+        const pinnedHere = pinKey === actDef.key;
+        const pinNote = pinDef && !pinnedHere ? `<small style="color:#ffd54a"> · 📌 ${pinDef.label}</small>` : '';
+        const failNote = state.pinFailed[c.id] && !curAct ? '<small style="color:#ff8a9a"> · ⚠️ fixado, sem recurso/vaga</small>' : '';
+        let blockReason = '';
+        if (eclipseBlocked) blockReason = ' · 🌑 em casa (Eclipse)';
+        else if (!isThis && !capsuleSkillOk) blockReason = ' · requer 🏗️5 e 🔧5';
+        else if (!isThis && capsuleOccupied) blockReason = ' · já em construção';
+        else if (!isThis && !affordable) blockReason = ' · falta recurso';
+        else if (slotBlocked) blockReason = bakeryCap ? ' · padarias cheias' : ' · requer Padaria';
+        return `
+          <div class="assign-row">
+            <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
+              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${blockReason ? `<small style="color:#ff8a9a">${blockReason}</small>` : ''}${pinNote}${failNote}</span>
+              ${skillsHtml}
+            </span>
+            <span style="display:flex; gap:5px; align-items:center; flex-shrink:0">
+              <button type="button" class="${pinnedHere ? 'ok' : 'sec'} btn-pin" data-cid="${c.id}" title="Fixar nesta ação" style="padding:5px 9px; font-size:.78rem" ${ready || (isBakery && !bakeryCap && !pinnedHere) ? 'disabled' : ''}>📌${pinnedHere ? ' Fixado' : ''}</button>
+              ${isThis
+                ? `<button type="button" class="danger btn-unassign" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${ready ? 'disabled' : ''}>Remover</button>`
+                : `<button type="button" class="ok btn-assign" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${ready || !affordable || slotBlocked ? 'disabled' : ''}>${curDef ? 'Trocar' : 'Designar'}</button>`
+              }
+            </span>
+          </div>
+        `;
+      }).join('')}
+    `;
+  }
+
+  // Botão Próxima Estação e Contador
+  const readyCount = Object.keys(r.seasonReady || {}).length;
+  const totalPlayers = r.players.length;
+  $('readyCounter').textContent = `${readyCount}/${totalPlayers}`;
+  $('btnNextSeason').textContent = ready ? 'Aguardando... (cancelar)' : 'Próxima Estação';
+  $('btnNextSeason').className = ready ? 'sec' : '';
+
+  // Botão Tarefas e Trabalho (menu inferior)
+  const assignedCount = Object.keys(state.assignments || {}).length;
+  $('btnTasks').textContent = `📋 Tarefas${assignedCount ? ` (${assignedCount})` : ''} ${tasksOpen ? '▼' : '▲'}`;
+  $('btnTasks').classList.toggle('active', tasksOpen);
+  $('tasksSheet').style.display = tasksOpen ? 'flex' : 'none';
+
+  $('btnWork').textContent = `👷 Trabalho ${workOpen ? '▼' : '▲'}`;
+  $('btnWork').classList.toggle('active', workOpen);
+  $('workSheet').style.display = workOpen ? 'flex' : 'none';
+  if (workOpen) $('workSheet').innerHTML = renderWorkSheet(state, team, ready);
+
+  $('btnToggleMap').classList.toggle('active', mapOpen);
+  if (mapOpen) {
+    $('mapModal').style.display = 'flex';
+    $('mapModal').innerHTML = renderColonyMapModal(r);
+  } else {
+    $('mapModal').style.display = 'none';
+  }
+
+  // Avisos sutis da colônia
+  const notes = state.notices || [];
+  $('noticeBar').style.display = notes.length ? 'flex' : 'none';
+  $('noticeBar').innerHTML = notes.map(t => `<div>${esc(t)}</div>`).join('') +
+    '<button type="button" class="sec btn-notice-ok">OK</button>';
+
+  // Menu de Plantações (abre ao tocar na Plantação no gerenciador)
+  if (farmOpen && (bld.plantacao || 0) > 0) {
+    $('farmModal').style.display = 'flex';
+    $('farmModal').innerHTML = farmHtml(state, team, ready, planet, sIdx);
+  } else {
+    farmOpen = false;
+    $('farmModal').style.display = 'none';
+  }
+
+  if (activeBuildingModal) {
+    const validModal =
+      (activeBuildingModal === 'housing' && ((bld.quarto || 0) + (bld.casa || 0) + (bld.vila || 0) > 0)) ||
+      ((bld[activeBuildingModal] || 0) > 0);
+    if (validModal) {
+      $('buildingModal').style.display = 'flex';
+      $('buildingModal').innerHTML = buildingModalHtml(state, team, ready);
+    } else {
+      activeBuildingModal = null;
+      $('buildingModal').style.display = 'none';
+    }
+  } else {
+    $('buildingModal').style.display = 'none';
+  }
+
+  if (state.activeEventModal) {
+    $('eventModal').style.display = 'flex';
+    $('eventModal').innerHTML = renderEventModalHtml(state);
+  } else {
+    $('eventModal').style.display = 'none';
+  }
+}
+
+
+/* ===== Sistema de Eventos (Anos Pares) ===== */
+function isAdjacentToAsteroid(r, playerId) {
+  const entry = Object.entries(r.colonies || {}).find(([, owner]) => owner === playerId);
+  if (!entry) return false;
+  const [py, px] = entry[0].split(',').map(Number);
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dy === 0 && dx === 0) continue;
+      const ny = py + dy, nx = px + dx;
+      if (ny >= 0 && ny < N && nx >= 0 && nx < N && r.map[ny][nx] === 'asteroides') return true;
+    }
+  }
+  return false;
+}
+
+function destroyRandomBuildingsPercent(state, maxPct) {
+  const pool = [];
+  BUILDING_LIST.forEach(b => {
+    if (b.key === 'capsula') return; // Cápsula não é destruída
+    for (let i = 0; i < (state.buildings[b.key] || 0); i++) pool.push(b);
+  });
+  if (!pool.length) return [];
+  const pct = (5 + rnd(maxPct - 4)) / 100; // até maxPct%
+  const toDestroy = Math.max(1, Math.floor(pool.length * pct));
+  shuffle(pool);
+  const destroyed = pool.slice(0, toDestroy);
+  destroyed.forEach(b => {
+    if (state.buildings[b.key] > 0) state.buildings[b.key]--;
+  });
+  syncFields(state);
+  syncBuildingsState(state);
+  return destroyed;
+}
+
+function triggerSeasonEvents(r) {
+  const year = r.year || 1;
+  const sIdx = (r.seasonIdx || 0) % 4;
+  r.yearEventsDone = r.yearEventsDone || {}; // { [playerId_year]: true }
+  r.solarFlareStars = r.solarFlareStars || {}; // { [starName_year]: true }
+
+  // Limpa estados de eventos da estação anterior
+  r.players.forEach(p => {
+    const state = ensureColonyState(r, p.id);
+    // Se houve eclipse na estação passada, ativa o bônus +5 em Fabricação e Suporte nesta estação
+    state.eclipseBoost = Boolean(state.eclipseActive);
+    state.eclipseActive = false;
+    state.auroraActive = false;
+  });
+
+
+  // Verificar chegada de viajantes da Rota de Fuga (após 3 estações)
+  r.players.forEach(p => {
+    const state = ensureColonyState(r, p.id);
+    if (state.pendingEscapees && state.pendingEscapees.length) {
+      const stillWaiting = [];
+      state.pendingEscapees.forEach(batch => {
+        batch.seasonsLeft -= 1;
+        if (batch.seasonsLeft <= 0) {
+          r.colonists[p.id] = r.colonists[p.id] || [];
+          r.chosen[p.id] = r.chosen[p.id] || [];
+          const slots = Math.max(0, MAX_COLONISTS - r.chosen[p.id].length);
+          const arriving = batch.travelers.slice(0, slots);
+          arriving.forEach(t => {
+            r.colonists[p.id].push(t);
+            r.chosen[p.id].push(t.id);
+          });
+          if (arriving.length) {
+            syncSynergy(r, p.id);
+            pushNotice(state, `🛸 Os fugitivos da Rota de Fuga chegaram à colônia: ${arriving.map(t => t.nome).join(' e ')}!`);
+          } else {
+            pushNotice(state, '🛸 Os fugitivos da Rota de Fuga chegaram, mas a colônia já atingiu o limite de 12 colonos.');
+          }
+        } else {
+          stillWaiting.push(batch);
+        }
+      });
+      state.pendingEscapees = stillWaiting;
+    }
+  });
+
+  if (year % 2 !== 0) return; // Eventos ocorrem apenas nos anos pares
+
+  // Primeiro: verificar se alguma estrela sofre Erupção Solar (afeta todos os planetas da órbita)
+  const starsList = Object.values(r.starNames || {});
+  starsList.forEach(starName => {
+    if (r.solarFlareStars[`${starName}_${year}`]) return;
+    // Chance proporcional por estação (1 em 4 estações se ainda não ocorreu no ano)
+    const remainingSeasons = 4 - sIdx;
+    if (Math.random() < (0.18 / remainingSeasons)) {
+      r.solarFlareStars[`${starName}_${year}`] = true;
+      r.players.forEach(p => {
+        const planet = getPlayerPlanetMeta(r, p.id);
+        if (planet.orbit === starName && !r.yearEventsDone[`${p.id}_${year}`]) {
+          r.yearEventsDone[`${p.id}_${year}`] = true;
+          const state = ensureColonyState(r, p.id);
+          const destroyed = destroyRandomBuildingsPercent(state, 40);
+          const desc = destroyed.length
+            ? `A estrela ${starName} sofreu uma violenta Erupção Solar! Todos os planetas de sua órbita foram atingidos e até 40% das construções foram destruídas (${destroyed.map(b => b.label).join(', ')}). Nenhum outro evento ocorrerá neste planeta este ano.`
+            : `A estrela ${starName} sofreu uma violenta Erupção Solar! Felizmente sua colônia não possuía construções vulneráveis, mas a radiação impede outros eventos neste planeta este ano.`;
+          state.activeEventModal = {
+            title: '☀️ Erupção Solar!',
+            desc,
+            type: 'solar_flare'
+          };
+        }
+      });
+    }
+  });
+
+  // Para cada jogador que ainda não teve evento no ano par
+  r.players.forEach(p => {
+    const key = `${p.id}_${year}`;
+    if (r.yearEventsDone[key]) return;
+    const state = ensureColonyState(r, p.id);
+    const planet = getPlayerPlanetMeta(r, p.id);
+
+    // Mesma chance de ocorrer em todas as estações (1 / estações restantes no ano)
+    const remainingSeasons = 4 - sIdx;
+    if (Math.random() >= (1 / remainingSeasons)) return;
+
+    r.yearEventsDone[key] = true;
+
+    // Ano 2: Sempre ocorre o Estranho Visitante
+    if (year === 2) {
+      const racas = Object.keys(RACAS);
+      const raca = racas[rnd(racas.length)];
+      const existingNames = new Set(((r.colonists || {})[p.id] || []).map(c => c.nome));
+      const visitor = makeColonist(Date.now() % 100000 + rnd(999), raca, pickName(raca, existingNames));
+      state.activeEventModal = {
+        title: '🛸 Estranho Visitante!',
+        desc: 'Um estranho visitante perdido neste planeta encontrou sua colônia! Ele aceita se juntar à sua equipe com a condição de que seja construída uma Cápsula de Emergência (custa 🪵 10 e 🪨 15, sem manutenção). Ele já possui o motor, mas um colono com 5 ou mais em Construção e Fabricação precisará trabalhar nela por 4 estações seguidas.',
+        type: 'visitor',
+        visitor
+      };
+      return;
+    }
+
+    // Demais anos pares: sorteia entre os eventos elegíveis para o planeta e estação
+    const candidates = ['crash_landing', 'escape_route'];
+    if (isAdjacentToAsteroid(r, p.id)) candidates.push('meteor_shower');
+    if ((planet.luas || 0) >= 1) candidates.push('eclipse');
+    if (sIdx === 3 || planet.clima === 'Sempre Inverno') candidates.push('aurora');
+
+    const chosen = candidates[rnd(candidates.length)];
+    if (chosen === 'meteor_shower') {
+      const destroyed = destroyRandomBuildingsPercent(state, 20);
+      state.activeEventModal = {
+        title: '☄️ Chuva de Meteoros!',
+        desc: destroyed.length
+          ? `Fragmentos do campo de asteroides vizinho atingiram o planeta! Até 20% das construções foram derrubadas: ${destroyed.map(b => b.label).join(', ')}.`
+          : 'Fragmentos do campo de asteroides vizinho cruzaram os céus do planeta, mas nenhuma construção foi atingida.',
+        type: 'meteor_shower'
+      };
+    } else if (chosen === 'eclipse') {
+      state.eclipseActive = true;
+      // Remove tarefas de Humanos e Drakthars nesta estação
+      teamOf(r, p.id).forEach(c => {
+        if (c.raca === 'Humano' || c.raca === 'Drakthar') {
+          const oldDef = state.assignments[c.id] ? findActionDef(state.assignments[c.id]) : null;
+          if (oldDef) refundCost(state.resources, actionCost(oldDef));
+          delete state.assignments[c.id];
+        }
+      });
+      state.activeEventModal = {
+        title: '🌑 Eclipse!',
+        desc: 'Uma das luas alinhou-se perfeitamente diante da estrela! Durante este eclipse, Humanos e Drakthars ficam em casa sem poder realizar tarefas. Na próxima estação, eles receberão +5 de bônus nas habilidades de Criação (Setor III) e Suporte (Setor IV)!',
+        type: 'eclipse'
+      };
+    } else if (chosen === 'crash_landing') {
+      const racas = Object.keys(RACAS);
+      const existingNames = new Set(((r.colonists || {})[p.id] || []).map(c => c.nome));
+      const count = 2 + rnd(3); // 2 a 4 viajantes
+      const travelers = Array.from({ length: count }, (_, idx) => {
+        const raca = racas[rnd(racas.length)];
+        return makeColonist((Date.now() + idx * 17 + rnd(500)) % 1000000, raca, pickName(raca, existingNames));
+      });
+      state.activeEventModal = {
+        title: '💥 Pouso Forçado!',
+        desc: `Uma nave danificada fez um pouso forçado próximo à sua colônia! ${count} viajantes sobreviveram. Você pode aceitar quantos quiser para sua equipe (respeitando o limite máximo de 12 colonos).`,
+        type: 'crash_landing',
+        travelers,
+        acceptedIds: []
+      };
+    } else if (chosen === 'escape_route') {
+      const racas = Object.keys(RACAS);
+      const existingNames = new Set(((r.colonists || {})[p.id] || []).map(c => c.nome));
+      const travelers = Array.from({ length: 2 }, (_, idx) => {
+        const raca = racas[rnd(racas.length)];
+        return makeColonist((Date.now() + idx * 31 + rnd(500)) % 1000000, raca, pickName(raca, existingNames));
+      });
+      state.activeEventModal = {
+        title: '🚨 Rota de Fuga!',
+        desc: 'Dois viajantes estão em rota de fuga pois não são mais bem-vindos em seu planeta. A nave deles transmite um sinal pedindo abrigo. Se você aceitar, ambos chegarão daqui 3 estações. Você deve aceitar os dois ou recusar ambos.',
+        type: 'escape_route',
+        travelers
+      };
+    } else if (chosen === 'aurora') {
+      state.auroraActive = true;
+      state.activeEventModal = {
+        title: '🌌 Aurora Boreal!',
+        desc: 'Luzes magníficas dançam pelo céu invernal! Inspirados pela beleza da Aurora Boreal, todos os colonos orgânicos recebem +3 em todas as habilidades durante esta estação (Robôs não são afetados).',
+        type: 'aurora'
+      };
+    }
+  });
+}
+
+function renderEventModalHtml(state) {
+  const ev = state.activeEventModal;
+  if (!ev) return '';
+
+  if (ev.type === 'visitor' && ev.visitor) {
+    const v = ev.visitor;
+    const rooms = load(), r = rooms[currentRoom];
+    const planet = r ? getPlayerPlanetMeta(r, me.id) : null;
+    const team = r ? getMyTeam(r).map(c => effectiveColonist(state, c, planet)) : [];
+    const atLimit = r ? !canAddColonists(r, me.id, 1) : false;
+
+    const eligibleCols = team.filter(c => (c.construcao || 0) >= 5 && (c.fabricacao || 0) >= 5);
+    const chosenBuilderId = ev.selectedBuilderId !== undefined ? ev.selectedBuilderId : null;
+
+    const profileHtml = SECTORS.map(sec => `
+      <div class="sector-box" style="margin-top:5px">
+        <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(v, sec.key)}</span></div>
+        <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${v[s.k]}</strong></span>`).join('')}</div>
+      </div>`).join('');
+
+    const buildersHtml = eligibleCols.length
+      ? eligibleCols.map(c => {
+          const isSel = String(chosenBuilderId) === String(c.id);
+          return `<button type="button" class="chip-btn btn-ev-pick-builder${isSel ? ' active' : ''}" data-cid="${c.id}">
+            ${RACA_ICONS[c.raca]} ${cName(c)} (🏗️${c.construcao} 🔧${c.fabricacao})
+          </button>`;
+        }).join('')
+      : `<div style="color:#ff8a9a; font-size:.82rem">⚠️ Nenhum colono possui 5+ em Construção e 5+ em Fabricação para construir a cápsula.</div>`;
+
+    const canAccept = !atLimit && chosenBuilderId !== null && eligibleCols.some(c => String(c.id) === String(chosenBuilderId));
+
+    return `
+      <div class="modal-sheet" style="border-color:#ffd54a; box-shadow: 0 0 30px rgba(255,213,74,.35)">
+        <div style="text-align:center; font-size:1.35rem; font-weight:800; color:#ffd54a">${ev.title}</div>
+        <p style="font-size:.88rem; line-height:1.4; text-align:center">${ev.desc}</p>
+        <div class="planet-info">
+          <div style="font-size:1rem"><strong>${RACA_ICONS[v.raca]} ${cName(v)}</strong> · <small>${v.raca}</small></div>
+          ${profileHtml}
+        </div>
+        <div class="planet-info" style="border-color:#4c5bd4">
+          <strong style="color:#9fb0ff">🚀 Designar Construtor Obrigatório (4 estações seguidas · 🪵10 🪨15):</strong>
+          <small style="opacity:.8">O colono ficará preso nesta tarefa até que os recursos sejam pagos e as 4 estações sejam concluídas.</small>
+          <div class="chip-row" style="margin-top:4px">${buildersHtml}</div>
+          ${atLimit ? '<div style="color:#ff8a9a; font-size:.8rem; margin-top:4px">⚠️ Limite máximo de 12 colonos atingido.</div>' : ''}
+        </div>
+        <div style="display:flex; gap:10px; margin-top:6px">
+          <button type="button" class="ok btn-ev-accept" style="flex:1" ${canAccept ? '' : 'disabled'}>Aceitar Visitante</button>
+          <button type="button" class="danger btn-ev-reject" style="flex:1">Recusar</button>
+        </div>
+      </div>`;
+  }
+
+
+  if (ev.type === 'crash_landing' && ev.travelers) {
+    const rooms = load(), r = rooms[currentRoom];
+    const currentCount = r ? getColonyCount(r, me.id) : 0;
+    const acceptedIds = ev.acceptedIds || [];
+    const remainingSlots = Math.max(0, MAX_COLONISTS - (currentCount + acceptedIds.length));
+
+    const cardsHtml = ev.travelers.map(t => {
+      const isAcc = acceptedIds.includes(t.id);
+      const profileHtml = SECTORS.map(sec => `
+        <div class="sector-box" style="margin-top:4px">
+          <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(t, sec.key)}</span></div>
+          <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${t[s.k]}</strong></span>`).join('')}</div>
+        </div>`).join('');
+
+      return `
+        <div class="planet-info" style="border-color:${isAcc ? '#51cf66' : '#2c3578'}">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <span><strong>${RACA_ICONS[t.raca]} ${cName(t)}</strong> · <small>${t.raca}</small></span>
+            <button type="button" class="${isAcc ? 'ok' : 'sec'} btn-ev-toggle-traveler" data-tid="${t.id}" style="padding:5px 10px; font-size:.8rem" ${!isAcc && remainingSlots <= 0 ? 'disabled' : ''}>
+              ${isAcc ? '✅ Aceito' : '+ Aceitar'}
+            </button>
+          </div>
+          ${profileHtml}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="modal-sheet" style="border-color:#ff922b; box-shadow: 0 0 30px rgba(255,146,43,.35)">
+        <div style="text-align:center; font-size:1.35rem; font-weight:800; color:#ff922b">${ev.title}</div>
+        <p style="font-size:.88rem; line-height:1.4; text-align:center">${ev.desc}</p>
+        <div style="text-align:center; font-size:.8rem; color:#9fb0ff">Vagas disponíveis na colônia: <strong>${remainingSlots}</strong> (Máx. 12 colonos)</div>
+        ${cardsHtml}
+        <button type="button" class="ok btn-ev-confirm-crash" style="width:100%; margin-top:4px">Confirmar Seleção (${acceptedIds.length} aceito(s))</button>
+      </div>`;
+  }
+
+  if (ev.type === 'escape_route' && ev.travelers) {
+    const rooms = load(), r = rooms[currentRoom];
+    const canFitBoth = r ? canAddColonists(r, me.id, 2) : false;
+
+    const cardsHtml = ev.travelers.map(t => {
+      const profileHtml = SECTORS.map(sec => `
+        <div class="sector-box" style="margin-top:4px">
+          <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(t, sec.key)}</span></div>
+          <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${t[s.k]}</strong></span>`).join('')}</div>
+        </div>`).join('');
+
+      return `
+        <div class="planet-info">
+          <div><strong>${RACA_ICONS[t.raca]} ${cName(t)}</strong> · <small>${t.raca}</small></div>
+          ${profileHtml}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="modal-sheet" style="border-color:#cc5de8; box-shadow: 0 0 30px rgba(204,93,232,.35)">
+        <div style="text-align:center; font-size:1.35rem; font-weight:800; color:#cc5de8">${ev.title}</div>
+        <p style="font-size:.88rem; line-height:1.4; text-align:center">${ev.desc}</p>
+        ${!canFitBoth ? '<div style="color:#ff8a9a; text-align:center; font-size:.82rem">⚠️ É necessário ter pelo menos 2 vagas na colônia (máx. 12 colonos) para aceitar ambos.</div>' : ''}
+        ${cardsHtml}
+        <div style="display:flex; gap:10px; margin-top:6px">
+          <button type="button" class="ok btn-ev-accept-escape" style="flex:1" ${canFitBoth ? '' : 'disabled'}>Aceitar Ambos (chegam em 3 est.)</button>
+          <button type="button" class="danger btn-ev-reject" style="flex:1">Recusar Ambos</button>
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="modal-sheet" style="border-color:#748ffc; box-shadow: 0 0 30px rgba(116,143,252,.4); text-align:center">
+      <div style="font-size:1.45rem; font-weight:800; color:#9fb0ff">${ev.title}</div>
+      <p style="font-size:.95rem; line-height:1.5; margin:8px 0">${ev.desc}</p>
+      <button type="button" class="ok btn-ev-close" style="width:100%">Entendido</button>
+    </div>`;
+}
+
+function resolveSeasonActions(r) {
+  r.players.forEach(p => {
+    const state = ensureColonyState(r, p.id);
+    const planet = getPlayerPlanetMeta(r, p.id);
+    const mod = RESOURCE_MODIFIERS[planet.recursos] ?? 0;
+    const allCols = (r.colonists || {})[p.id] || [];
+
+    Object.entries(state.assignments || {}).forEach(([cid, actKey]) => {
+      const baseCol = allCols.find(c => c.id === +cid);
+      const col = baseCol && effectiveColonist(state, baseCol, planet); // inclui o ponto extra de sintonia, se houver
+      const def = findActionDef(actKey);
+      if (!col || !def) return;
+
+      if (def.res && def.stat) {
+        // Materiais e Alimentos (cortar, minerar, caçar)
+        const gained = Math.max(0, (col[def.stat] || 0) + mod);
+        state.resources[def.res] = (state.resources[def.res] || 0) + gained;
+      } else if (def.field !== undefined) {
+        const f = (state.fields || [])[def.field];
+        if (!f) return;
+        const sIdx = r.seasonIdx || 0;
+        if (f.stage === 'empty' && f.crop && CROPS[f.crop] && canPlantNow(planet.clima, sIdx)) {
+          f.stage = 'planted';
+          f.plantedSkill = Math.max(0, col.agricultura || 0);
+          f.plantedBy = col.nome || `${col.raca} #${col.id + 1}`;
+        } else if (f.stage === 'planted' && f.crop && CROPS[f.crop] && canHarvestNow(planet.clima, sIdx)) {
+          const rs = CROPS[f.crop].res;
+          const totalYield = Math.max(0, (f.plantedSkill || 0) + (col.agricultura || 0) + harvestClimateBonus(planet.clima));
+          state.resources[rs] = (state.resources[rs] || 0) + totalYield;
+          f.stage = 'empty';
+          f.crop = null;
+          f.plantedSkill = 0;
+          f.plantedBy = '';
+        }
+      } else if (def.bakery !== undefined) {
+        const maxWheat = Math.max(0, col.culinaria || 0);
+        const wheatUsed = Math.min(maxWheat, state.resources.trigo || 0);
+        state.resources.trigo = (state.resources.trigo || 0) - wheatUsed;
+        state.resources.paes = (state.resources.paes || 0) + wheatUsed * 2;
+      } else if (def.kitchen !== undefined) {
+        const recipe = (state.kitchenRecipes || {})[def.kitchen] || 'meal';
+        const maxPortions = Math.max(0, col.culinaria || 0);
+        if (recipe === 'veg') {
+          const made = Math.min(maxPortions, Math.floor((state.resources.trigo || 0) / 2));
+          state.resources.trigo = (state.resources.trigo || 0) - made * 2;
+          state.resources.refeicoesVeg = (state.resources.refeicoesVeg || 0) + made;
+        } else {
+          const made = Math.min(maxPortions, state.resources.carne || 0, state.resources.arroz || 0);
+          state.resources.carne = (state.resources.carne || 0) - made;
+          state.resources.arroz = (state.resources.arroz || 0) - made;
+          state.resources.refeicoes = (state.resources.refeicoes || 0) + made;
+        }
+      } else if (def.lab !== undefined) {
+        state.researchPoints = (state.researchPoints || 0) + Math.max(0, col.inteligencia || 0);
+      } else if (def.building === 'capsula') {
+        if (!state.capsulePaid) {
+          const capCost = BUILD_COSTS.capsula;
+          if (canPay(state.resources, capCost)) {
+            payCost(state.resources, capCost);
+            state.capsulePaid = true;
+            state.capsuleProgress = 1;
+            state.pinned[cid] = 'build_capsula';
+            pushNotice(state, '🚀 Recursos pagos (🪵10 🪨15)! Construção da Cápsula de Emergência iniciada: 1/4 estações concluídas.');
+          } else {
+            state.pinned[cid] = 'build_capsula';
+            pushNotice(state, '🚀 Aguardando recursos (🪵10 🪨15) para iniciar a Cápsula de Emergência. O construtor permanece alocado na tarefa.');
+          }
+        } else {
+          state.capsuleProgress = (state.capsuleProgress || 0) + 1;
+          if (state.capsuleProgress >= 4) {
+            state.buildings.capsula = (state.buildings.capsula || 0) + 1;
+            delete state.pinned[cid];
+            state.capsuleBuilderId = null;
+            pushNotice(state, '🚀 A Cápsula de Emergência foi concluída e o construtor está livre novamente!');
+          } else {
+            state.pinned[cid] = 'build_capsula';
+            pushNotice(state, `🚀 Construção da Cápsula de Emergência: ${state.capsuleProgress}/4 estações concluídas.`);
+          }
+        }
+      } else if (def.catKey === 'construcao' && def.building) {
+        state.buildings[def.building] = (state.buildings[def.building] || 0) + 1;
+      }
+      // Expedições registradas para a estação (mecânicas de retorno podem ser expandidas depois)
+    });
+
+    state.assignments = {};
+
+    // Fim do inverno (4ª estação do ano): manutenção anual das construções
+    if ((r.seasonIdx || 0) % 4 === 3) payMaintenance(state);
+
+    // Fome: a estação que acabou entra no histórico das últimas 4;
+    // Se ficar 3 estações seguidas como Extremamente Faminto, o colono morre.
+    const deadIds = [];
+    teamOf(r, p.id).forEach(c => {
+      const d = mealData(state, c);
+      const h = d.hist || [];
+      d.hist = [...h.slice(-3), d.now];
+      d.now = 0;
+
+      const hs = hungerStatus(state, c);
+      if (hs.key === 'starving') {
+        d.starvingStreak = (d.starvingStreak || 0) + 1;
+        if (d.starvingStreak >= 3) {
+          deadIds.push(c.id);
+          pushNotice(state, `💀 ${c.nome || c.raca} morreu de fome após 3 estações seguidas extremamente faminto.`);
+        }
+      } else {
+        d.starvingStreak = 0;
+      }
+    });
+
+    if (deadIds.length) {
+      r.chosen[p.id] = (r.chosen[p.id] || []).filter(id => !deadIds.includes(id));
+      deadIds.forEach(id => {
+        delete state.pinned[id];
+        delete state.housing[id];
+        delete state.meals[id];
+      });
+    }
+
+    syncFields(state);
+    syncBuildingsState(state);
+    syncSynergy(r, p.id);
+
+    // Colonos fixados voltam sozinhos para a ação na nova estação (pagando o custo, se houver)
+    state.pinFailed = {};
+    Object.keys(state.pinned || {}).forEach(cid => {
+      if (!findActionDef(state.pinned[cid])) { delete state.pinned[cid]; return; }
+      if (!assignColonist(state, cid, state.pinned[cid])) state.pinFailed[cid] = true;
+    });
+  });
+}
+
+$('btnTogglePlanet').onclick = () => {
+  openDrawer = openDrawer === 'planet' ? null : 'planet';
+  renderLobby();
+};
+
+$('btnToggleColonists').onclick = () => {
+  openDrawer = openDrawer === 'colonists' ? null : 'colonists';
+  renderLobby();
+};
+
+$('btnToggleMateriais').onclick = () => {
+  openDrawer = openDrawer === 'materiais' ? null : 'materiais';
+  renderLobby();
+};
+
+$('btnToggleAlimentos').onclick = () => {
+  openDrawer = openDrawer === 'alimentos' ? null : 'alimentos';
+  renderLobby();
+};
+
+// Tocar em um colono da gaveta abre/fecha as qualidades dele
+$('drawerColonists').onclick = e => {
+  const card = e.target.closest('.dcol');
+  if (!card) return;
+  const id = +card.dataset.cid;
+  drawerColId = drawerColId === id ? null : id;
+  renderLobby();
+};
+
+// Tocar na Plantação (no gerenciador de construções) abre o menu de plantações
+$('colonyBuildings').onclick = e => {
+  const card = e.target.closest('.build-card');
+  if (!card) return;
+  const b = card.dataset.b;
+  if (b === 'plantacao') { farmOpen = true; renderLobby(); return; }
+  if (['quarto', 'casa', 'vila'].includes(b)) { activeBuildingModal = 'housing'; renderLobby(); return; }
+  if (['padaria', 'cozinha', 'laboratorio'].includes(b)) { activeBuildingModal = b; renderLobby(); return; }
+};
+
+
+$('eventModal').onclick = e => {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r) return;
+  const state = ensureColonyState(r, me.id);
+  const ev = state.activeEventModal;
+  if (!ev) return;
+
+  if (e.target.closest('.btn-ev-close')) {
+    state.activeEventModal = null;
+    save(rooms); renderLobby();
+    return;
+  }
+
+  const pickBuilderBtn = e.target.closest('.btn-ev-pick-builder');
+  if (pickBuilderBtn && ev.type === 'visitor') {
+    ev.selectedBuilderId = +pickBuilderBtn.dataset.cid;
+    save(rooms); renderLobby();
+    return;
+  }
+
+  if (e.target.closest('.btn-ev-accept') && ev.visitor) {
+    if (ev.selectedBuilderId === undefined || ev.selectedBuilderId === null) return;
+    if (!canAddColonists(r, me.id, 1)) return;
+    const builderId = ev.selectedBuilderId;
+
+    // Devolve custo se o construtor estava em outra tarefa
+    const oldDef = state.assignments[builderId] ? findActionDef(state.assignments[builderId]) : null;
+    if (oldDef) refundCost(state.resources, actionCost(oldDef));
+
+    // Designa e trava o construtor na tarefa de construção da Cápsula de Emergência
+    state.assignments[builderId] = 'build_capsula';
+    state.pinned[builderId] = 'build_capsula';
+    state.capsuleBuilderId = builderId;
+    state.capsulePaid = false;
+    state.capsuleProgress = 0;
+
+    r.colonists[me.id] = r.colonists[me.id] || [];
+    r.chosen[me.id] = r.chosen[me.id] || [];
+    r.colonists[me.id].push(ev.visitor);
+    r.chosen[me.id].push(ev.visitor.id);
+    state.visitorAccepted = true;
+    state.activeEventModal = null;
+    syncSynergy(r, me.id);
+    pushNotice(state, `🛸 ${ev.visitor.nome} juntou-se à colônia! O construtor designado está alocado na Cápsula de Emergência (🪵10 🪨15 · 4 estações).`);
+    save(rooms); renderLobby();
+    return;
+  }
+
+  const toggleTravBtn = e.target.closest('.btn-ev-toggle-traveler');
+  if (toggleTravBtn && ev.type === 'crash_landing') {
+    const tid = +toggleTravBtn.dataset.tid;
+    ev.acceptedIds = ev.acceptedIds || [];
+    if (ev.acceptedIds.includes(tid)) {
+      ev.acceptedIds = ev.acceptedIds.filter(id => id !== tid);
+    } else if (canAddColonists(r, me.id, ev.acceptedIds.length + 1)) {
+      ev.acceptedIds.push(tid);
+    }
+    save(rooms); renderLobby();
+    return;
+  }
+
+  if (e.target.closest('.btn-ev-confirm-crash') && ev.type === 'crash_landing') {
+    const accepted = (ev.travelers || []).filter(t => (ev.acceptedIds || []).includes(t.id));
+    r.colonists[me.id] = r.colonists[me.id] || [];
+    r.chosen[me.id] = r.chosen[me.id] || [];
+    accepted.forEach(t => {
+      if (canAddColonists(r, me.id, 1)) {
+        r.colonists[me.id].push(t);
+        r.chosen[me.id].push(t.id);
+      }
+    });
+    state.activeEventModal = null;
+    syncSynergy(r, me.id);
+    pushNotice(state, accepted.length
+      ? `💥 Você acolheu ${accepted.map(t => t.nome).join(', ')} do pouso forçado!`
+      : '💥 Nenhum sobrevivente do pouso forçado foi integrado à colônia.');
+    save(rooms); renderLobby();
+    return;
+  }
+
+  if (e.target.closest('.btn-ev-accept-escape') && ev.type === 'escape_route') {
+    if (!canAddColonists(r, me.id, 2)) return;
+    state.pendingEscapees = state.pendingEscapees || [];
+    state.pendingEscapees.push({
+      seasonsLeft: 3,
+      travelers: ev.travelers
+    });
+    state.activeEventModal = null;
+    pushNotice(state, '🚨 Você aceitou o pedido de asilo! Os dois viajantes chegarão à colônia em 3 estações.');
+    save(rooms); renderLobby();
+    return;
+  }
+
+  if (e.target.closest('.btn-ev-reject')) {
+    state.activeEventModal = null;
+    pushNotice(state, '🛸 Você recusou a proposta.');
+    save(rooms); renderLobby();
+    return;
+  }
+};
+
+$('buildingModal').onclick = e => {
+  if (e.target === $('buildingModal') || e.target.closest('.btn-bmodal-close')) {
+    activeBuildingModal = null;
+    renderLobby();
+    return;
+  }
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r) return;
+  const state = ensureColonyState(r, me.id);
+  const team = getMyTeam(r);
+  const locked = Boolean((r.seasonReady || {})[me.id]);
+
+  // Moradias: adicionar/remover morador
+  const addHouseBtn = e.target.closest('.btn-house-add');
+  if (addHouseBtn) {
+    const unit = addHouseBtn.dataset.unit;
+    const cid = addHouseBtn.dataset.cid;
+    const bKey = unit.split('_')[0];
+    const cap = HOUSING_CAP[bKey] || 0;
+    const currentResidents = team.filter(c => (state.housing || {})[c.id] === unit);
+    const targetColonist = team.find(c => String(c.id) === String(cid));
+    if (currentResidents.length < cap && targetColonist) {
+      if (bKey === 'quarto' || currentResidents.length === 0 || currentResidents[0].raca === targetColonist.raca) {
+        state.housing[cid] = unit;
+        save(rooms); renderLobby();
+      }
+    }
+    return;
+  }
+  const remHouseBtn = e.target.closest('.btn-house-remove');
+  if (remHouseBtn) {
+    delete state.housing[remHouseBtn.dataset.cid];
+    save(rooms); renderLobby();
+    return;
+  }
+
+  if (locked) return;
+
+  // Receita da Cozinha
+  const recBtn = e.target.closest('.btn-kitchen-recipe');
+  if (recBtn) {
+    state.kitchenRecipes[+recBtn.dataset.idx] = recBtn.dataset.rec;
+    save(rooms); renderLobby();
+    return;
+  }
+
+  // Tema do Laboratório
+  const labBtn = e.target.closest('.btn-lab-topic');
+  if (labBtn) {
+    state.labResearch[+labBtn.dataset.idx] = labBtn.dataset.topic;
+    save(rooms); renderLobby();
+    return;
+  }
+
+  // Designar / Fixar / Remover trabalhador de Padaria, Cozinha ou Laboratório
+  const setBtn = e.target.closest('.btn-bmodal-set');
+  if (setBtn) {
+    const key = setBtn.dataset.key, cid = setBtn.dataset.cid;
+    [state.assignments, state.pinned].forEach(map => {
+      Object.keys(map).forEach(o => { if (map[o] === key && o !== String(cid)) delete map[o]; });
+    });
+    assignColonist(state, cid, key);
+    save(rooms); renderLobby();
+    return;
+  }
+  const pinBtn = e.target.closest('.btn-bmodal-pin');
+  if (pinBtn) {
+    const key = pinBtn.dataset.key, cid = pinBtn.dataset.cid;
+    if (state.pinned[cid] === key) delete state.pinned[cid];
+    else {
+      [state.assignments, state.pinned].forEach(map => {
+        Object.keys(map).forEach(o => { if (map[o] === key && o !== String(cid)) delete map[o]; });
+      });
+      assignColonist(state, cid, key);
+      state.pinned[cid] = key;
+    }
+    save(rooms); renderLobby();
+    return;
+  }
+  const clearBtn = e.target.closest('.btn-bmodal-clear');
+  if (clearBtn) {
+    delete state.assignments[clearBtn.dataset.cid];
+    save(rooms); renderLobby();
+    return;
+  }
+};
+
+$('farmModal').onclick = e => {
+  if (e.target === $('farmModal') || e.target.closest('.btn-farm-close')) { farmOpen = false; renderLobby(); return; }
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || (r.seasonReady || {})[me.id]) return;
+  const state = ensureColonyState(r, me.id);
+
+  const cropBtn = e.target.closest('.btn-crop');
+  if (cropBtn) {
+    const i = +cropBtn.dataset.f, f = state.fields[i];
+    if (!f || f.stage === 'planted') return;
+    const planet = getPlayerPlanetMeta(r, me.id);
+    if (!canPlantNow(planet.clima, r.seasonIdx || 0)) return;
+    if (f.crop === cropBtn.dataset.crop) { f.crop = null; clearField(state, i); }
+    else f.crop = cropBtn.dataset.crop;
+    save(rooms); renderLobby(); return;
+  }
+  const setBtn = e.target.closest('.btn-field-set');
+  if (setBtn) {
+    assignToField(state, +setBtn.dataset.f, setBtn.dataset.cid);
+    save(rooms); renderLobby(); return;
+  }
+  const pinBtn = e.target.closest('.btn-field-pin');
+  if (pinBtn) {
+    const i = +pinBtn.dataset.f, cid = pinBtn.dataset.cid, key = 'farm_' + i;
+    if (state.pinned[cid] === key) delete state.pinned[cid];
+    else { assignToField(state, i, cid); state.pinned[cid] = key; }
+    save(rooms); renderLobby(); return;
+  }
+  const clearBtn = e.target.closest('.btn-field-clear');
+  if (clearBtn) {
+    delete state.assignments[clearBtn.dataset.cid]; // só nesta estação; se estiver fixado, volta na próxima
+    save(rooms); renderLobby();
+  }
+};
+
+// Menu de alimentos: selecionar Refeições (normal ou vegetariana) e alimentar colonos
+$('drawerResources').onclick = e => {
+  const mBtn = e.target.closest('.btn-meal');
+  if (mBtn) {
+    const t = mBtn.dataset.mtype;
+    mealSel = mealSel === t ? null : t;
+    renderLobby();
+    return;
+  }
+  const feed = e.target.closest('.btn-feed');
+  if (!feed) return;
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r) return;
+  const state = ensureColonyState(r, me.id);
+  const c = ((r.colonists || {})[me.id] || []).find(x => x.id === +feed.dataset.cid);
+  if (!c || !feedColonist(state, c, feed.dataset.type || 'meal')) return;
+  save(rooms); renderLobby();
+};
+
+// Fechar os avisos da colônia
+$('noticeBar').onclick = e => {
+  if (!e.target.closest('.btn-notice-ok')) return;
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r) return;
+  ensureColonyState(r, me.id).notices = [];
+  save(rooms); renderLobby();
+};
+
+$('btnTasks').onclick = () => {
+  tasksOpen = !tasksOpen;
+  if (tasksOpen) workOpen = false;
+  renderLobby();
+};
+
+$('catTabs').onclick = e => {
+  const btn = e.target.closest('.cat-tab');
+  if (!btn || btn.disabled) return;
+  activeCat = btn.dataset.cat;
+  const cat = ACTION_CATEGORIES.find(c => c.key === activeCat);
+  activeActionKey = null; // ao trocar de aba, nenhuma tarefa fica selecionada
+  renderLobby();
+};
+
+$('subOpts').onclick = e => {
+  const btn = e.target.closest('.sub-opt');
+  if (!btn) return;
+  activeActionKey = activeActionKey === btn.dataset.act ? null : btn.dataset.act; // tocar de novo desmarca
+
+  renderLobby();
+};
+
+$('assignBox').onclick = e => {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || (r.seasonReady || {})[me.id]) return;
+  const state = ensureColonyState(r, me.id);
+
+  const assignBtn = e.target.closest('.btn-assign');
+  if (assignBtn) {
+    if (String(state.capsuleBuilderId) === String(assignBtn.dataset.cid) && !(state.buildings.capsula > 0)) return;
+    if (!assignColonist(state, assignBtn.dataset.cid, activeActionKey)) return;
+    save(rooms);
+    renderLobby();
+    return;
+  }
+
+  // Fixar / desafixar o colono na ação selecionada
+  const pinBtn = e.target.closest('.btn-pin');
+  if (pinBtn) {
+    const cid = pinBtn.dataset.cid;
+    if (String(state.capsuleBuilderId) === String(cid) && !(state.buildings.capsula > 0)) return;
+    if (state.pinned[cid] === activeActionKey) {
+      delete state.pinned[cid]; // desafixa (a tarefa desta estação continua)
+    } else {
+      state.pinned[cid] = activeActionKey;
+      assignColonist(state, cid, activeActionKey); // já designa agora, se houver recurso
+    }
+    save(rooms);
+    renderLobby();
+    return;
+  }
+
+  const unassignBtn = e.target.closest('.btn-unassign');
+  if (unassignBtn) {
+    const cid = unassignBtn.dataset.cid;
+    if (String(state.capsuleBuilderId) === String(cid) && !(state.buildings.capsula > 0)) return;
+    const oldDef = state.assignments[cid] ? findActionDef(state.assignments[cid]) : null;
+    if (oldDef) refundCost(state.resources, actionCost(oldDef));
+    delete state.assignments[cid];
+    save(rooms);
+    renderLobby();
+  }
+};
+
+$('btnNextSeason').onclick = () => {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r) return;
+  r.seasonReady = r.seasonReady || {};
+
+  if (r.seasonReady[me.id]) {
+    delete r.seasonReady[me.id];
+  } else {
+    r.seasonReady[me.id] = true;
+  }
+
+  // Se todos os jogadores confirmaram, resolve as tarefas e avança a estação
+  if (r.players.every(p => r.seasonReady[p.id])) {
+    resolveSeasonActions(r);
+    r.seasonReady = {};
+    r.seasonIdx = (r.seasonIdx || 0) + 1;
+    if (r.seasonIdx >= 4) {
+      r.seasonIdx = 0;
+      r.year = (r.year || 1) + 1;
+    }
+    triggerSeasonEvents(r);
+  }
+
+  save(rooms);
+  renderLobby();
+};
+
+/* ===== Eventos Globais da Sala ===== */
+$('btnStart').onclick = newMap;
+$('btnNewMap').onclick = newMap;
+$('btnLeaveGame').onclick = () => { leaveRoom(currentRoom); currentRoom = null; show('home'); };
+
+$('btnCreate').onclick = () => {
+  const n = $('name').value.trim();
+  if (!n) return $('msg').textContent = 'Digite seu nome.';
+  $('msg').textContent = '';
+  me.name = n;
+  enter(createRoom(n));
+};
+
+$('btnJoin').onclick = () => {
+  const n = $('name').value.trim();
+  const c = $('joinCode').value.trim().toUpperCase();
+  if (!n) return $('msg').textContent = 'Digite seu nome.';
+  if (c.length !== 4) return $('msg').textContent = 'O código tem 4 letras.';
+  me.name = n;
+  const err = joinRoom(c, n);
+  if (err) return $('msg').textContent = err;
+  $('msg').textContent = '';
+  enter(c);
+};
+
+$('btnLeave').onclick = () => { leaveRoom(currentRoom); currentRoom = null; show('home'); };
+bc.onmessage = () => { if (currentRoom) renderLobby(); };
+addEventListener('storage', () => { if (currentRoom) renderLobby(); });
+addEventListener('beforeunload', () => { if (currentRoom) leaveRoom(currentRoom); });
+
+const RACE_INFO = {
+  Humano: {
+    desc: 'Adaptáveis, versáteis e movidos pela curiosidade. Humanos mantêm equilíbrio em quase todas as áreas e se destacam na exploração e no cultivo.',
+    strengths: 'Curiosidade (6–10), Agricultura (5–9), Inteligência e Lenha (4–8).',
+    diet: '4 refeições por ano (refeições normais e pães; não come refeição vegetariana).'
+  },
+  'Robô': {
+    desc: 'Unidades sintéticas construídas para precisão e eficiência. Não sentem fome, mas têm pouca aptidão para tarefas orgânicas ou intuitivas.',
+    strengths: 'Tiro (6–10), Construção (6–10), Mineração, Medicina e Inteligência (5–9).',
+    diet: 'Não precisa se alimentar.'
+  },
+  Drakthar: {
+    desc: 'Guerreiros robustos de temperamento feroz e grande apetite. Dominam o combate corpo a corpo, a caça e o trabalho pesado.',
+    strengths: 'Corpo a Corpo (6–10), Caça (6–10), Mineração e Curiosidade (5–9).',
+    diet: '8 refeições por ano (refeições normais e pães; não come refeição vegetariana).'
+  },
+  Floraks: {
+    desc: 'Seres botânicos pacíficos que extraem energia do ambiente. Excelentes curandeiros, artesãos e estudiosos, mas evitam o combate.',
+    strengths: 'Medicina (6–10), Fabricação (5–9), Inteligência (5–9) e Agricultura (4–8).',
+    diet: 'Não precisa se alimentar.'
+  },
+  Nebulians: {
+    desc: 'Entidades etéreas de natureza sutil e dieta estritamente vegetariana. Possuem boa coordenação para coleta, mineração e culinária.',
+    strengths: 'Mineração (5–9), Tiro, Caça, Agricultura, Culinária e Medicina (4–8).',
+    diet: '6 refeições por ano — consomem Refeições Vegetarianas e Pães.'
+  }
+};
+
+function renderRaceButtons() {
+  const row = $('raceRow');
+  if (!row) return;
+  row.innerHTML = Object.keys(RACAS).map(r =>
+    `<button type="button" class="sec race-btn" data-race="${r}">${RACA_ICONS[r]} ${r}</button>`
+  ).join('');
+}
+
+$('raceRow').onclick = e => {
+  const btn = e.target.closest('.race-btn');
+  if (!btn) return;
+  const r = btn.dataset.race;
+  const info = RACE_INFO[r];
+  if (!info) return;
+  $('raceModal').style.display = 'flex';
+  $('raceModal').innerHTML = `
+    <div class="modal-sheet">
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <strong style="font-size:1.1rem">${RACA_ICONS[r]} ${r}</strong>
+        <button type="button" class="sec btn-race-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+      </div>
+      <p style="font-size:.9rem; line-height:1.45; opacity:.9">${info.desc}</p>
+      <div class="planet-info">
+        <div><strong>⭐ Pontos fortes:</strong> ${info.strengths}</div>
+        <div><strong>🍽️ Alimentação:</strong> ${info.diet}</div>
+      </div>
+    </div>`;
+};
+
+$('raceModal').onclick = e => {
+  if (e.target === $('raceModal') || e.target.closest('.btn-race-close')) {
+    $('raceModal').style.display = 'none';
+  }
+};
+renderRaceButtons();
+
+
+let workOpen = false;
+let mapOpen = false;
+let mapSel = null;
+
+function renderWorkSheet(state, team, ready) {
+  const rows = team.map(c => {
+    const curKey = state.assignments[c.id];
+    const pinKey = (state.pinned || {})[c.id];
+    const curDef = curKey ? findActionDef(curKey) : null;
+    const pinDef = pinKey ? findActionDef(pinKey) : null;
+
+    let statusBadge = '';
+    let taskText = '';
+    let canClear = false;
+    let canUnpin = false;
+
+    if (curDef && pinKey === curKey) {
+      statusBadge = '<span class="hunger ok">📌 Fixado</span>';
+      taskText = curDef.label;
+      canClear = true;
+      canUnpin = true;
+    } else if (curDef) {
+      statusBadge = '<span class="hunger soon">⏳ Alocado momentaneamente</span>';
+      taskText = curDef.label + (pinDef ? ` <small style="color:#ffd54a">(fixado em ${pinDef.label})</small>` : '');
+      canClear = true;
+      canUnpin = Boolean(pinDef);
+    } else if (pinDef) {
+      statusBadge = '<span class="hunger hungry">😴 Em repouso (fixado sem recurso)</span>';
+      taskText = `Aguardando: ${pinDef.label}`;
+      canUnpin = true;
+    } else {
+      statusBadge = '<span class="hunger" style="color:#9fb0ff; border-color:#3a4496">😴 Em repouso</span>';
+      taskText = 'Nenhuma tarefa designada';
+    }
+
+    return `
+      <div class="assign-row">
+        <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
+          <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong> <small style="opacity:.6">· ${c.raca}</small></span>
+          <span>${statusBadge}</span>
+          <small style="opacity:.85">${taskText}</small>
+        </span>
+        <span style="display:flex; gap:5px; flex-shrink:0">
+          ${canUnpin ? `<button type="button" class="sec btn-work-unpin" data-cid="${c.id}" style="padding:5px 8px; font-size:.75rem" ${ready ? 'disabled' : ''}>Desafixar</button>` : ''}
+          ${canClear ? `<button type="button" class="danger btn-work-clear" data-cid="${c.id}" style="padding:5px 8px; font-size:.75rem" ${ready ? 'disabled' : ''}>Liberar</button>` : ''}
+        </span>
+      </div>`;
+  }).join('');
+
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center">
+      <strong style="color:#9fb0ff">👷 Quadro de Trabalho</strong>
+      <small style="opacity:.7">${Object.keys(state.assignments || {}).length}/${team.length} ativos</small>
+    </div>
+    ${rows}
+  `;
+}
+
+function renderColonyMapModal(r) {
+  const cols = Object.fromEntries(r.players.map(p => [p.id, p.color || '#9fb0ff']));
+  const colonies = r.colonies || {};
+  const gridHtml = r.map.map((row, y) => row.map((t, x) => {
+    const owner = colonies[y + ',' + x];
+    const sel = mapSel && mapSel[0] === y && mapSel[1] === x ? ' sel' : '';
+    const style = owner ? ` style="border-color:${cols[owner]};box-shadow:0 0 10px ${cols[owner]}"` : '';
+    return `<div class="cell ${t}${sel}" data-y="${y}" data-x="${x}"${style}>${owner ? '🏠' : ICONS[t]}</div>`;
+  }).join('')).join('');
+
+  const chips = r.players.map(p =>
+    `<span style="color:${cols[p.id]}">● ${esc(p.name)}${p.id === me.id ? ' (você)' : ''}</span>`
+  ).join(' ');
+
+  let info = '<div style="font-size:.82rem; opacity:.75; text-align:center">Toque em uma célula do mapa para inspecionar.</div>';
+  if (mapSel) {
+    const [y, x] = mapSel;
+    const key = y + ',' + x;
+    const t = r.map[y][x];
+    const owner = colonies[key];
+    if (t === 'estrela') {
+      info = `<div class="planet-info"><strong>⭐ Estrela ${esc((r.starNames || {})[key] || 'Desconhecida')}</strong></div>`;
+    } else if (t === 'planeta') {
+      const meta = (r.planetMeta || {})[key] || { orbit: 'Desconhecida', clima: 'Temperado', oxigenio: '50%', recursos: 'Diversos' };
+      const ownerPlayer = owner ? r.players.find(p => p.id === owner) : null;
+      info = `
+        <div class="planet-info">
+          <div><strong>🪐 Planeta (${y + 1}, ${x + 1})</strong>${ownerPlayer ? ` · <span style="color:${cols[owner]}">🏠 Colônia de ${esc(ownerPlayer.name)}</span>` : ' · Desabitado'}</div>
+          <div>🌟 <strong>Órbita:</strong> ${esc(meta.orbit)} · 🌡️ <strong>Clima:</strong> ${esc(meta.clima)}</div>
+          <div>🫧 <strong>Oxigênio:</strong> ${esc(meta.oxigenio)} · ⛏️ <strong>Recursos:</strong> ${esc(meta.recursos)} · 🌙 <strong>Luas:</strong> ${meta.luas !== undefined ? meta.luas : 0}</div>
+        </div>`;
+    } else {
+      info = `<div class="planet-info"><strong>${ICONS[t] || '▫️'} ${NAMES[t]} (${y + 1}, ${x + 1})</strong></div>`;
+    }
+  }
+
+  return `
+    <div class="modal-sheet">
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <strong>🗺️ Mapa da Galáxia</strong>
+        <button type="button" class="sec btn-map-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:6px 12px; font-size:.82rem; justify-content:center">${chips}</div>
+      <div class="gmap-grid">${gridHtml}</div>
+      ${info}
+    </div>`;
+}
+
+$('btnWork').onclick = () => {
+  workOpen = !workOpen;
+  if (workOpen) tasksOpen = false;
+  renderLobby();
+};
+
+$('workSheet').onclick = e => {
+  const rooms = load(), r = rooms[currentRoom];
+  if (!r || (r.seasonReady || {})[me.id]) return;
+  const state = ensureColonyState(r, me.id);
+
+  const clearBtn = e.target.closest('.btn-work-clear');
+  if (clearBtn) {
+    const cid = clearBtn.dataset.cid;
+    if (String(state.capsuleBuilderId) === String(cid) && !(state.buildings.capsula > 0)) return;
+    const oldDef = state.assignments[cid] ? findActionDef(state.assignments[cid]) : null;
+    if (oldDef) refundCost(state.resources, actionCost(oldDef));
+    delete state.assignments[cid];
+    save(rooms); renderLobby(); return;
+  }
+  const unpinBtn = e.target.closest('.btn-work-unpin');
+  if (unpinBtn) {
+    if (String(state.capsuleBuilderId) === String(unpinBtn.dataset.cid) && !(state.buildings.capsula > 0)) return;
+    delete state.pinned[unpinBtn.dataset.cid];
+    save(rooms); renderLobby();
+  }
+};
+
+$('btnToggleMap').onclick = () => {
+  mapOpen = !mapOpen;
+  renderLobby();
+};
+
+$('mapModal').onclick = e => {
+  if (e.target === $('mapModal') || e.target.closest('.btn-map-close')) {
+    mapOpen = false;
+    renderLobby();
+    return;
+  }
+  const cell = e.target.closest('.cell');
+  if (cell) {
+    mapSel = [+cell.dataset.y, +cell.dataset.x];
+    renderLobby();
+  }
+};
+
+</script>
+</body>
+</html>
