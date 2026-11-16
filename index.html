@@ -135,6 +135,7 @@
   .dcol-avg div { background: #14193d; border-radius: 5px; padding: 2px 6px; display: flex; justify-content: space-between; }
   .bonus-tag { color: #ffd54a; font-weight: 700; }
   .pen-tag { color: #ff8a9a; font-weight: 700; }
+  .trait-line { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: .74rem; color: #c9d1ff; margin: 4px 0 2px; }
 
   /* Mapa da galáxia dentro da colônia */
   .gmap-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; width: 100%; aspect-ratio: 1; }
@@ -144,10 +145,17 @@
   #home > * { flex-shrink: 0; }
   .race-row { display: flex; flex-wrap: wrap; gap: 6px; }
   .race-btn { flex: 1 1 30%; padding: 10px 6px; font-size: .82rem; }
+
+  /* Indicador de conexão com o servidor */
+  #netBadge { position: fixed; top: 6px; left: 50%; transform: translateX(-50%); z-index: 60; font-size: .72rem; padding: 3px 10px; border-radius: 999px; background: rgba(11,14,36,.9); border: 1px solid #2c3578; pointer-events: none; max-width: 92vw; text-align: center; }
+  #netBadge.net-online { border-color: #2b8a3e; color: #8ce99a; }
+  #netBadge.net-connecting { border-color: #e8b923; color: #ffe066; }
+  #netBadge.net-offline { border-color: #a83246; color: #ff8a9a; }
 </style>
 </head>
 <body>
 <canvas id="stars"></canvas>
+<div id="netBadge" style="display:none"></div>
 
 <!-- TELA INICIAL -->
 <div id="home" class="screen active">
@@ -235,6 +243,7 @@
   <div id="buildingModal" class="modal"></div>
   <div id="eventModal" class="modal" style="align-items:center"></div>
   <div id="mapModal" class="modal"></div>
+  <div id="expModal" class="modal"></div>
 
   <div class="colony-bottom">
     <div class="tasks-sheet" id="tasksSheet" style="display:none">
@@ -278,43 +287,189 @@ addEventListener('resize', resize); resize();
   requestAnimationFrame(draw);
 })(0);
 
-/* ===== Camada de salas (localStorage + BroadcastChannel com ID por aba) ===== */
+/* ===== Camada de salas =====
+   Dois modos:
+   - ONLINE: as salas ficam no servidor (WebSocket). Cada jogada envia só o que mudou (patch).
+   - LOCAL (sem servidor configurado): localStorage + BroadcastChannel, só entre abas do mesmo aparelho.
+   Para jogar online, coloque o endereço do seu servidor em SERVER_URL (ou abra o jogo com ?server=wss://...). */
+const SERVER_URL = new URLSearchParams(location.search).get('server') || 'wss://SEU-APP.onrender.com';
+const NET_ON = /^wss?:\/\//.test(SERVER_URL) && !SERVER_URL.includes('SEU-APP');
+
 const KEY = 'har_rooms_v2';
 const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('har_v2') : { postMessage() {}, onmessage: null };
-let tabId = sessionStorage.getItem('har_tab_id');
+let tabId = (NET_ON ? localStorage.getItem('har_pid') : null) || sessionStorage.getItem('har_tab_id');
 if (!tabId) {
   tabId = Math.random().toString(36).slice(2, 10);
   sessionStorage.setItem('har_tab_id', tabId);
 }
+if (NET_ON) { try { localStorage.setItem('har_pid', tabId); } catch (e) {} } // mesmo jogador após recarregar a página
 const me = { id: tabId, name: '' };
 let currentRoom = null;
 const COLORS = ['#ff6b6b', '#4dabf7', '#51cf66', '#ffd43b', '#cc5de8', '#ff922b'];
 
+/* --- patch: diferença entre duas versões de uma sala (objetos recursivos; listas são trocadas por inteiro) --- */
+const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
+const NET_SKIP = new Set(['players', 'host']); // controlados só pelo servidor (entrar/sair)
+function diffRoom(a, b, path, ops) {
+  if (isObj(a) && isObj(b)) {
+    Object.keys(b).forEach(k => {
+      if (!path.length && NET_SKIP.has(k)) return;
+      if (!(k in a)) ops.push({ p: [...path, k], v: b[k] });
+      else diffRoom(a[k], b[k], [...path, k], ops);
+    });
+    Object.keys(a).forEach(k => {
+      if (!path.length && NET_SKIP.has(k)) return;
+      if (!(k in b)) ops.push({ p: [...path, k], d: 1 });
+    });
+  } else if (JSON.stringify(a) !== JSON.stringify(b)) {
+    ops.push({ p: path, v: b });
+  }
+}
+function applyOps(room, ops) {
+  ops.forEach(op => {
+    if (!op.p || !op.p.length || op.p.some(k => k === '__proto__' || k === 'constructor' || k === 'prototype')) return;
+    let o = room;
+    for (let i = 0; i < op.p.length - 1; i++) {
+      if (!isObj(o[op.p[i]])) o[op.p[i]] = {};
+      o = o[op.p[i]];
+    }
+    const last = op.p[op.p.length - 1];
+    if (op.d) delete o[last]; else o[last] = op.v;
+  });
+}
+const clone = o => JSON.parse(JSON.stringify(o));
+
+/* --- conexão --- */
+let netRooms = {};          // cache local das salas em que estou
+let ws = null, reqSeq = 0, wsBackoff = 1000;
+const pending = {};
+const waitOpen = [];
+
+function setNetBadge(kind) {
+  const el = document.getElementById('netBadge');
+  if (!el) return;
+  if (!NET_ON) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.textContent = kind === 'online' ? '🟢 Online' : (kind === 'connecting' ? '🟡 Conectando… (o servidor pode levar até 1 min para acordar)' : '🔴 Sem conexão — reconectando…');
+  el.className = 'net-' + kind;
+}
+
+function netConnect() {
+  if (!NET_ON) return;
+  setNetBadge('connecting');
+  try { ws = new WebSocket(SERVER_URL); } catch (e) { setTimeout(netConnect, 3000); return; }
+  ws.onopen = () => {
+    wsBackoff = 1000;
+    setNetBadge('online');
+    while (waitOpen.length) waitOpen.shift()();
+    if (currentRoom) { // reconectou: sincroniza a sala atual
+      netRequest({ t: 'get', code: currentRoom }).then(res => {
+        if (res.room) netRooms[currentRoom] = res.room; else { delete netRooms[currentRoom]; currentRoom = null; }
+        renderLobby();
+      });
+    }
+  };
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.id && pending[m.id]) { const f = pending[m.id]; delete pending[m.id]; f(m); }
+    if (m.t === 'patch' && netRooms[m.code]) {
+      applyOps(netRooms[m.code], m.ops);
+      onRemoteUpdate(m.code);
+    } else if (m.t === 'gone') {
+      delete netRooms[m.code];
+      if (m.code === currentRoom) renderLobby();
+    }
+  };
+  ws.onclose = () => {
+    setNetBadge('offline');
+    setTimeout(netConnect, wsBackoff);
+    wsBackoff = Math.min(wsBackoff * 2, 8000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+setInterval(() => { if (ws && ws.readyState === 1) ws.send('{"t":"ping"}'); }, 25000);
+
+function whenOpen() {
+  return new Promise((res, rej) => {
+    if (ws && ws.readyState === 1) return res();
+    const t = setTimeout(() => rej(new Error('timeout')), 90000);
+    waitOpen.push(() => { clearTimeout(t); res(); });
+  });
+}
+async function netRequest(msg) {
+  try { await whenOpen(); } catch (e) { return { error: 'Não consegui conectar ao servidor.' }; }
+  return new Promise(res => {
+    const id = ++reqSeq;
+    msg.id = id;
+    pending[id] = res;
+    ws.send(JSON.stringify(msg));
+    setTimeout(() => { if (pending[id]) { delete pending[id]; res({ error: 'O servidor não respondeu.' }); } }, 20000);
+  });
+}
+
+// Chegou uma mudança de outro jogador
+function onRemoteUpdate(code) {
+  if (code !== currentRoom) return;
+  // O anfitrião avança a estação quando todos confirmarem (evita ficar travado se dois clicarem juntos)
+  const r = netRooms[code];
+  if (r && r.phase === 'colony' && r.host === me.id && r.players.length && r.players.every(p => (r.seasonReady || {})[p.id])) {
+    const rooms = load();
+    advanceSeason(rooms[code]);
+    save(rooms);
+  }
+  renderLobby();
+}
+
 function load() {
+  if (NET_ON) return clone(netRooms);
   try { return JSON.parse(localStorage.getItem(KEY) || '{}'); }
   catch (e) { return {}; }
 }
-function save(r) {
-  try { localStorage.setItem(KEY, JSON.stringify(r)); } catch (e) {}
+function save(rooms) {
+  if (NET_ON) {
+    Object.keys(rooms).forEach(code => {
+      const cur = netRooms[code];
+      if (!cur) return;
+      const ops = [];
+      diffRoom(cur, rooms[code], [], ops);
+      if (!ops.length) return;
+      applyOps(cur, ops);
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'patch', code, ops }));
+    });
+    return;
+  }
+  try { localStorage.setItem(KEY, JSON.stringify(rooms)); } catch (e) {}
   try { bc.postMessage('update'); } catch (e) {}
 }
 
-function createRoom(name) {
-  const rooms = load();
-  let code;
+function newRoomCode(rooms) {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let code;
   do {
     code = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
   } while (rooms[code]);
-  rooms[code] = {
-    host: me.id,
-    players: [{ id: me.id, name, color: COLORS[0] }]
-  };
-  save(rooms);
   return code;
 }
 
-function joinRoom(code, name) {
+function createRoom(name) { // modo local
+  const rooms = load();
+  const code = newRoomCode(rooms);
+  rooms[code] = { host: me.id, players: [{ id: me.id, name, color: COLORS[0] }] };
+  save(rooms);
+  return code;
+}
+async function createRoomNet(name) {
+  for (let i = 0; i < 5; i++) {
+    const code = newRoomCode(netRooms);
+    const room = { host: me.id, players: [{ id: me.id, name, color: COLORS[0] }] };
+    const res = await netRequest({ t: 'create', code, room });
+    if (res.error) return { error: res.error };
+    if (res.ok) { netRooms[code] = res.room || room; return { code }; }
+  }
+  return { error: 'Não foi possível criar a sala.' };
+}
+
+function joinRoom(code, name) { // modo local
   const rooms = load(), r = rooms[code];
   if (!r) return 'Sala não encontrada.';
   if (r.players.length >= 6 && !r.players.some(p => p.id === me.id)) return 'Sala cheia.';
@@ -328,8 +483,20 @@ function joinRoom(code, name) {
   save(rooms);
   return null;
 }
+async function joinRoomNet(code, name) {
+  const res = await netRequest({ t: 'join', code, player: { id: me.id, name } });
+  if (res.error) return res.error;
+  netRooms[code] = res.room;
+  return null;
+}
 
 function leaveRoom(code) {
+  if (NET_ON) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'leave', code, pid: me.id }));
+    delete netRooms[code];
+    try { localStorage.removeItem('har_last'); } catch (e) {}
+    return;
+  }
   const rooms = load(), r = rooms[code];
   if (!r) return;
   r.players = r.players.filter(p => p.id !== me.id);
@@ -365,6 +532,7 @@ function renderLobby() {
 
 function enter(code) {
   currentRoom = code;
+  if (NET_ON) { try { localStorage.setItem('har_last', JSON.stringify({ code, name: me.name })); } catch (e) {} }
   selected = null;
   expandedColId = null;
   show('lobby');
@@ -379,6 +547,56 @@ const esc = s => String(s).replace(/</g, '&lt;');
 const ICONS = { estrela: '⭐', planeta: '🪐', asteroides: '☄️', vazio: '' };
 const NAMES = { estrela: 'Estrela', planeta: 'Planeta', asteroides: 'Asteroides', vazio: 'Vazio' };
 const rnd = n => Math.floor(Math.random() * n);
+/* ===== Visual dos planetas =====
+   Cada planeta ganha uma aparência própria: a paleta vem do clima e o desenho (listras, anéis,
+   crateras, continentes, redemoinho...) vem da posição no mapa. Luas aparecem como pontinhos. */
+const PLANET_PALETTES = {
+  'Sempre Inverno': [['#f2fbff', '#a8dcff', '#4a78b0']],
+  'Frio': [['#b4d0ff', '#5b86d6', '#22397a'], ['#cfc4ff', '#7b69d6', '#2e2377']],
+  'Temperado': [['#a6f09a', '#36a063', '#124f3d'], ['#8fd8ff', '#2f84d8', '#13427d']],
+  'Quente': [['#ffc27d', '#e06a2c', '#6b240f'], ['#ffdc8a', '#cf9030', '#5f3a10']],
+  'Sempre Verão': [['#fff59a', '#e8aa2a', '#8f4410'], ['#ff9a6a', '#d63a22', '#5e1010']]
+};
+function planetIcon(meta, y, x) {
+  meta = meta || {};
+  const pals = PLANET_PALETTES[meta.clima] || PLANET_PALETTES['Temperado'];
+  const seed = y * 5 + x * 3 + y * x;
+  const [c1, c2, c3] = pals[seed % pals.length];
+  const variant = seed % 6;
+  const id = `pl${y}_${x}`;
+  const moons = Math.min(2, meta.luas || 0);
+  let deco = '';
+  if (variant === 1) { // gigante gasoso listrado
+    deco = `<rect x="4" y="12" width="32" height="3.2" fill="${c3}" opacity=".45"/><rect x="4" y="19" width="32" height="4.4" fill="#fff" opacity=".22"/><rect x="4" y="26" width="32" height="2.6" fill="${c3}" opacity=".5"/>`;
+  } else if (variant === 2) { // oceanos e continentes
+    deco = `<path d="M10 14c4-4 9-2 10 2s-4 6-8 5-5-3-2-7z" fill="${c3}" opacity=".55"/><path d="M22 24c4-2 8 0 7 4s-6 4-8 2-1-5 1-6z" fill="${c3}" opacity=".5"/>`;
+  } else if (variant === 3) { // crateras
+    deco = `<circle cx="14" cy="15" r="3.4" fill="${c3}" opacity=".5"/><circle cx="25" cy="22" r="4.4" fill="${c3}" opacity=".45"/><circle cx="17" cy="27" r="2.2" fill="${c3}" opacity=".5"/><circle cx="26" cy="12" r="1.8" fill="${c3}" opacity=".5"/>`;
+  } else if (variant === 4) { // redemoinho
+    deco = `<path d="M7 18c8-8 18-6 24 0M9 25c7-5 15-4 22 1" fill="none" stroke="#fff" stroke-width="2.2" opacity=".28" stroke-linecap="round"/>`;
+  } else if (variant === 5) { // calotas polares
+    deco = `<ellipse cx="20" cy="7" rx="9" ry="3.6" fill="#fff" opacity=".5"/><ellipse cx="20" cy="33" rx="8" ry="3" fill="#fff" opacity=".4"/>`;
+  }
+  const ring = variant === 0 || variant === 1
+    ? `<ellipse cx="20" cy="20" rx="19" ry="5.2" fill="none" stroke="${c1}" stroke-width="2.2" opacity=".85" transform="rotate(-18 20 20)"/>` : '';
+  const ringFront = ring ? `<path d="M2 22.8c5 5 31 1 36-5" fill="none" stroke="${c1}" stroke-width="2.2" opacity=".9" transform="rotate(-18 20 20)" clip-path="inset(50% 0 0 0)"/>` : '';
+  const moonDots = moons >= 1 ? `<circle cx="34" cy="8" r="2.4" fill="#d8d8e8"/>` + (moons >= 2 ? `<circle cx="6" cy="33" r="1.9" fill="#b9b9cf"/>` : '') : '';
+  return `<svg viewBox="0 0 40 40" width="1.45em" height="1.45em" style="display:block" aria-hidden="true">
+    <defs>
+      <radialGradient id="${id}" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="${c1}"/><stop offset=".55" stop-color="${c2}"/><stop offset="1" stop-color="${c3}"/></radialGradient>
+      <clipPath id="${id}c"><circle cx="20" cy="20" r="${ring ? 12 : 15}"/></clipPath>
+    </defs>
+    ${ring ? ring.replace('<ellipse', '<ellipse data-back="1"') : ''}
+    <circle cx="20" cy="20" r="${ring ? 12 : 15}" fill="url(#${id})"/>
+    <g clip-path="url(#${id}c)" ${ring ? 'transform="translate(20 20) scale(.8) translate(-20 -20)"' : ''}>${deco}</g>
+    ${ringFront}${moonDots}
+  </svg>`;
+}
+function cellIcon(r, t, y, x) {
+  if (t === 'planeta') return planetIcon((r.planetMeta || {})[y + ',' + x], y, x);
+  return ICONS[t];
+}
+
 function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) {
     const j = rnd(i + 1);
@@ -473,7 +691,7 @@ function renderGame(r) {
     const owner = colonies[y + ',' + x];
     const sel = selected && selected[0] === y && selected[1] === x ? ' sel' : '';
     const style = owner ? ` style="border-color:${cols[owner]};box-shadow:0 0 10px ${cols[owner]}"` : '';
-    return `<div class="cell ${t}${sel}" data-y="${y}" data-x="${x}"${style}>${owner ? '🏠' : ICONS[t]}</div>`;
+    return `<div class="cell ${t}${sel}" data-y="${y}" data-x="${x}"${style}>${owner ? '🏠' : cellIcon(r, t, y, x)}</div>`;
   }).join('')).join('');
 
   const count = {};
@@ -662,12 +880,63 @@ function pickName(raca, used) {
 // Nome para mostrar (colonos antigos, sem nome, usam o formato genérico)
 const cName = c => esc(c.nome || `${c.raca} #${c.id + 1}`);
 
+/* ===== Aperfeiçoamento de habilidades =====
+   Habilidades vão de 0 a 20, mas todo colono começa com no máximo 10.
+   Cada colono tem 3 habilidades distintas marcadas: Facilidade, Talento e Paixão.
+   Ao performar uma tarefa relacionada a uma delas, o colono ganha +1 nela:
+   Paixão a cada 1 vez, Talento a cada 2 vezes, Facilidade a cada 3 vezes. */
+const SKILL_MAX = 20;
+const TRAIT_INFO = {
+  facilidade: { label: 'Facilidade', icon: '🟢', every: 3 },
+  talento: { label: 'Talento', icon: '🔵', every: 2 },
+  paixao: { label: 'Paixão', icon: '🔥', every: 1 }
+};
+
+function rollTraits() {
+  const pool = STATS.map(s => s.k);
+  const pick = () => pool.splice(rnd(pool.length), 1)[0];
+  return { facilidade: pick(), talento: pick(), paixao: pick() };
+}
+
+/* Incapaz: de 0 a 3 habilidades (fora Facilidade/Talento/Paixão) em que o colono não consegue trabalhar.
+   A habilidade fica zerada e ele não pode fazer tarefas que a usem. */
+function applyIncapaz(c) {
+  if (c.incapaz) return;
+  const taken = new Set(Object.values(c.traits || {}));
+  const pool = STATS.map(s => s.k).filter(k => !taken.has(k));
+  const n = rnd(4); // 0 a 3
+  c.incapaz = [];
+  for (let i = 0; i < n; i++) c.incapaz.push(pool.splice(rnd(pool.length), 1)[0]);
+  c.incapaz.forEach(k => { c[k] = 0; });
+}
+const statName = k => (STATS.find(s => s.k === k) || { n: k }).n;
+
+function traitOf(c, statKey) {
+  if (!c.traits) return null;
+  return Object.keys(TRAIT_INFO).find(k => c.traits[k] === statKey) || null;
+}
+function traitMark(c, statKey) {
+  if ((c.incapaz || []).includes(statKey)) return ' <span title="Incapaz">⛔</span>';
+  const t = traitOf(c, statKey);
+  return t ? ` <span title="${TRAIT_INFO[t].label}">${TRAIT_INFO[t].icon}</span>` : '';
+}
+function traitsHtml(c) {
+  if (!c.traits) return '';
+  const inc = (c.incapaz || []).map(k => STATS.find(x => x.k === k)).filter(Boolean);
+  return `<div class="trait-line">${Object.entries(TRAIT_INFO).map(([k, t]) => {
+    const s = STATS.find(x => x.k === c.traits[k]);
+    return s ? `<span>${t.icon} ${t.label}: ${s.i} ${s.n}</span>` : '';
+  }).join('')}${inc.length ? `<span class="pen-tag">⛔ Incapaz: ${inc.map(s => `${s.i} ${s.n}`).join(', ')}</span>` : ''}</div>`;
+}
+
 function makeColonist(id, raca = 'Humano', nome = '') {
   const c = { id, raca, nome };
   STATS.forEach(s => {
     const [a, b] = RACAS[raca][s.k];
     c[s.k] = a + rnd(b - a + 1);
   });
+  c.traits = rollTraits();
+  applyIncapaz(c);
   return c;
 }
 
@@ -710,6 +979,7 @@ function colonistCardHtml(c, isPicked, isExpanded, isLocked) {
         <span>${RACA_ICONS[c.raca]} ${cName(c)} <small style="opacity:.6; font-weight:400">· ${c.raca}</small>${badge}</span>
         <button type="button" class="sec btn-close-col" style="padding:4px 10px; font-size:.78rem">Fechar ✕</button>
       </div>
+      ${traitsHtml(c)}
       ${SECTORS.map(sec => `
         <div class="sector-box">
           <div class="sector-title">
@@ -717,7 +987,7 @@ function colonistCardHtml(c, isPicked, isExpanded, isLocked) {
             <span>Média: ${getSectorAvg(c, sec.key)}</span>
           </div>
           <div class="srow">
-            ${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${c[s.k]}</strong></span>`).join('')}
+            ${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${c[s.k]}</strong>${traitMark(c, s.k)}</span>`).join('')}
           </div>
         </div>
       `).join('')}
@@ -845,8 +1115,8 @@ $('btnStartMission').onclick = () => {
   r.colonyStates = {};
   r.players.forEach(p => {
     r.colonyStates[p.id] = {
-      resources: { madeira: 0, pedra: 0, carne: 0, trigo: 0, arroz: 0, algodao: 0, paes: 0, refeicoes: 0, refeicoesVeg: 0 },
-      buildings: { quarto: 0, casa: 0, vila: 0, plantacao: 0, padaria: 0, cozinha: 0, laboratorio: 0 },
+      resources: { madeira: 0, pedra: 0, carne: 0, trigo: 0, arroz: 0, algodao: 0, paes: 0, refeicoes: 0, refeicoesVeg: 0, energia: 0, alface: 0 },
+      buildings: { quarto: 0, casa: 0, vila: 0, plantacao: 0, padaria: 0, cozinha: 0, laboratorio: 0, gerador: 0 },
       assignments: {}, // { [colonistId]: actionKey }
       pinned: {}       // colonos fixados: { [colonistId]: actionKey }
     };
@@ -893,7 +1163,8 @@ const ACTION_CATEGORIES = [
       { key: 'build_plantacao', label: '🌱 Plantação', building: 'plantacao' },
       { key: 'build_padaria', label: '🥖 Padaria', building: 'padaria' },
       { key: 'build_cozinha', label: '🍳 Cozinha', building: 'cozinha' },
-      { key: 'build_laboratorio', label: '🔬 Laboratório', building: 'laboratorio' }
+      { key: 'build_laboratorio', label: '🔬 Laboratório', building: 'laboratorio' },
+      { key: 'build_gerador', label: '⚡ Gerador à Lenha', building: 'gerador' }
     ]
   },
   {
@@ -915,7 +1186,8 @@ const BUILDING_LIST = [
   { key: 'plantacao', label: 'Plantação', icon: '🌱' },
   { key: 'padaria', label: 'Padaria', icon: '🥖' },
   { key: 'cozinha', label: 'Cozinha', icon: '🍳' },
-  { key: 'laboratorio', label: 'Laboratório', icon: '🔬' }
+  { key: 'laboratorio', label: 'Laboratório', icon: '🔬' },
+  { key: 'gerador', label: 'Gerador à Lenha', icon: '⚡' }
 ];
 
 /* ===== Custos das ações =====
@@ -929,9 +1201,34 @@ const BUILD_COSTS = {
   plantacao: { madeira: 5 },
   padaria: { madeira: 10, pedra: 5 },
   cozinha: { madeira: 5, pedra: 10 },
-  laboratorio: { madeira: 20, pedra: 20 }
+  laboratorio: { madeira: 20, pedra: 20 },
+  gerador: { madeira: 10, pedra: 15 }
 };
-const RES_ICONS = { madeira: '🪵', pedra: '🪨', carne: '🥩', trigo: '🌾', arroz: '🍚', algodao: '🧶', paes: '🥖', refeicoes: '🍽️', refeicoesVeg: '🥗' };
+const RES_ICONS = { madeira: '🪵', pedra: '🪨', carne: '🥩', trigo: '🌾', arroz: '🍚', algodao: '🧶', paes: '🥖', refeicoes: '🍽️', refeicoesVeg: '🥗', energia: '⚡', alface: '🥬' };
+
+/* ===== Energia =====
+   O Gerador à Lenha converte madeira em energia (1 🪵 → GENERATOR_RATE ⚡), sem precisar de colono.
+   Cada Robô tem sua própria bateria (começa cheia, máx. ROBOT_ENERGY_MAX) e gasta ROBOT_ENERGY_USE por estação.
+   Robô com menos que isso fica desligado: não pode ser designado. A recarga é feita no menu do Gerador. */
+const GENERATOR_RATE = 1;
+const ROBOT_ENERGY_MAX = 10;
+const ROBOT_ENERGY_USE = 3;
+
+function isRobotColonist(state, cid) {
+  return state.robotEnergy && state.robotEnergy[cid] !== undefined;
+}
+function robotPowered(state, cid) {
+  return !isRobotColonist(state, cid) || state.robotEnergy[cid] >= ROBOT_ENERGY_USE;
+}
+function energyBadge(state, c) {
+  if (!isRobotColonist(state, c.id)) return '';
+  const e = state.robotEnergy[c.id];
+  const cls = e >= ROBOT_ENERGY_USE ? (e <= ROBOT_ENERGY_USE * 2 ? 'soon' : 'ok') : 'hungry';
+  return `<span class="hunger ${cls}">🔋 ${e}/${ROBOT_ENERGY_MAX}${e < ROBOT_ENERGY_USE ? ' · desligado' : ''}</span>`;
+}
+function powerNote(state, c) {
+  return robotPowered(state, c.id) ? '' : '<small style="color:#ff8a9a"> · 🔋 sem energia</small>';
+}
 
 function actionCost(def) {
   if (def && def.building === 'capsula') return {}; // Pago diretamente durante a execução da tarefa
@@ -954,18 +1251,100 @@ function refundCost(res, cost) {
 const EXPEDITION_STATS = {
   exp_exploracao: ['curiosidade', 'inteligencia'],
   exp_comercial: ['inteligencia', 'fabricacao'],
-  exp_combate: ['tiro', 'corpo', 'caca']
+  exp_combate: ['tiro', 'corpo']
 };
-function actionStats(def) {
+
+/* ===== Pesquisa (árvore do Laboratório) =====
+   O colono designado produz conhecimento por estação: média aritmética das habilidades de pesquisa
+   (Inteligência e Curiosidade) e das habilidades relacionadas à pesquisa escolhida. */
+const RESEARCH_STATS = ['inteligencia', 'curiosidade'];
+const RESEARCH_TREE = {
+  capsula: {
+    label: '🚀 Cápsula de Emergência', cost: 15, stats: ['construcao', 'fabricacao'], requires: [],
+    desc: 'Libera a construção da Cápsula de Emergência na aba Construção.'
+  }
+};
+function researchState(state) {
+  state.research = state.research || { done: {}, progress: {} };
+  state.research.done = state.research.done || {};
+  state.research.progress = state.research.progress || {};
+  return state.research;
+}
+function researchAvailable(state, key) {
+  const t = RESEARCH_TREE[key], rs = researchState(state);
+  return Boolean(t) && !rs.done[key] && t.requires.every(k => rs.done[k]);
+}
+function labTopic(state, i) {
+  const sel = (state.labResearch || {})[i];
+  if (sel && researchAvailable(state, sel)) return sel;
+  return Object.keys(RESEARCH_TREE).find(k => researchAvailable(state, k)) || null;
+}
+function researchKnowledge(c, topic) {
+  const keys = [...RESEARCH_STATS, ...RESEARCH_TREE[topic].stats];
+  const avg = keys.reduce((a, k) => a + (c[k] || 0), 0) / keys.length;
+  return Math.round(avg * 10) / 10;
+}
+
+/* Mínimo de Construção para erguer cada construção (Cápsula tem regra própria: 5 em Construção e Fabricação) */
+const BUILD_MIN = { default: 3, gerador: 5, laboratorio: 5 };
+const buildMin = b => BUILD_MIN[b] !== undefined ? BUILD_MIN[b] : BUILD_MIN.default;
+
+// Motivo pelo qual o colono não pode fazer a tarefa ('' se pode). `c` (opcional) = colono já com bônus/penalidades.
+function taskBlockReason(state, cid, def, c) {
+  if (!def) return '';
+  const inc = (state.incapaz || {})[cid] || (c && c.incapaz) || [];
+  const bad = actionStats(def, state).map(s => s.k).filter(k => inc.includes(k));
+  if (bad.length) return `⛔ incapaz em ${bad.map(statName).join(', ')}`;
+  if (def.building && def.building !== 'capsula') {
+    const min = buildMin(def.building);
+    const cur = c ? c.construcao : (state.construcaoNow || {})[cid];
+    if (cur !== undefined && cur < min) return `requer 🏗️${min}+ (tem ${cur})`;
+  }
+  return '';
+}
+function skillNote(state, c, key) {
+  const why = taskBlockReason(state, c.id, findActionDef(key), c);
+  return why ? `<small style="color:#ff8a9a"> · ${why}</small>` : '';
+}
+
+function actionStats(def, state) {
   if (!def) return [];
-  const keys = EXPEDITION_STATS[def.key] || (def.building ? ['construcao'] : (def.stat ? [def.stat] : []));
+  let keys;
+  if (def.lab !== undefined) {
+    const topic = state ? labTopic(state, def.lab) : null;
+    keys = [...RESEARCH_STATS, ...(topic ? RESEARCH_TREE[topic].stats : [])];
+  } else {
+    keys = EXPEDITION_STATS[def.key] || (def.building ? ['construcao'] : (def.stat ? [def.stat] : []));
+  }
   return keys.map(k => STATS.find(s => s.k === k)).filter(Boolean);
+}
+
+// Treino: cada tarefa performada conta para as habilidades relacionadas que tenham Facilidade/Talento/Paixão
+function trainColonist(state, base, def, gains) {
+  if (!base || !base.traits) return;
+  state.training = state.training || {};
+  const t = state.training[base.id] = state.training[base.id] || {};
+  actionStats(def, state).forEach(s => {
+    const trait = traitOf(base, s.k);
+    if (!trait) return;
+    t[s.k] = (t[s.k] || 0) + 1;
+    if (t[s.k] >= TRAIT_INFO[trait].every) {
+      t[s.k] = 0;
+      if (base[s.k] < SKILL_MAX) {
+        base[s.k] += 1;
+        gains.push(`${base.nome || base.raca}: ${s.n} ${base[s.k]}`);
+      }
+    }
+  });
 }
 
 /* Designa um colono a uma ação nesta estação: devolve o custo da tarefa antiga e cobra a nova.
    Retorna false (sem mudar nada) se não houver recursos para pagar. */
 function assignColonist(state, cid, actKey) {
   if (state.assignments[cid] === actKey) return true;
+  if (!robotPowered(state, cid)) return false; // robô sem energia está desligado
+  if (isAway(state, cid)) return false;        // quem está em expedição não pode performar tarefas
+  if (taskBlockReason(state, cid, findActionDef(actKey))) return false; // incapaz ou sem Construção mínima
   if (actKey === 'assar_pao') {
     const cap = state.buildings.padaria || 0;
     const used = Object.entries(state.assignments || {}).filter(([k, v]) => k !== String(cid) && v === 'assar_pao').length;
@@ -1020,10 +1399,19 @@ const SYNERGY_FLAVOR = {
   Nebulians: 'eles parecem flutuar na mesma frequência.'
 };
 
-function teamOf(r, pid) {
+// Todos os colonos da colônia, inclusive os que estão viajando em expedição
+function teamOfAll(r, pid) {
   const all = (r.colonists || {})[pid] || [];
   const ids = (r.chosen || {})[pid] || [];
   return all.filter(c => ids.includes(c.id));
+}
+// Colonos presentes na colônia (quem está em expedição não conta)
+function teamOf(r, pid) {
+  const st = (r.colonyStates || {})[pid] || {};
+  return teamOfAll(r, pid).filter(c => !isAway(st, c.id));
+}
+function isAway(state, cid) {
+  return (state.expeditions || []).some(e => e.cids.some(id => String(id) === String(cid)));
 }
 
 // Penalidade de fome aplicada em todas as habilidades
@@ -1067,7 +1455,7 @@ function effectiveColonist(state, c, planet = null) {
   STATS.forEach(s => {
     let eMod = (eclipseBoost && (s.cat === 'Criação' || s.cat === 'Suporte')) ? eclipseBoost : 0;
     let val = out[s.k] + (b === s.k ? 1 : 0) + hPen + housePen + fMod + auroraMod + eMod;
-    out[s.k] = Math.max(0, val);
+    out[s.k] = Math.min(SKILL_MAX, Math.max(0, val));
   });
   return out;
 }
@@ -1075,7 +1463,7 @@ function effectiveColonist(state, c, planet = null) {
 function syncSynergy(r, pid) {
   const state = ensureColonyState(r, pid);
   const groups = {};
-  teamOf(r, pid).forEach(c => (groups[c.raca] = groups[c.raca] || []).push(c));
+  teamOfAll(r, pid).forEach(c => (groups[c.raca] = groups[c.raca] || []).push(c));
   Object.keys(RACAS).forEach(raca => {
     const group = groups[raca] || [];
     if (group.length >= SYNERGY_MIN) {
@@ -1101,7 +1489,8 @@ const MAINT_COST = {
   plantacao: { madeira: 1 },
   padaria: { madeira: 2, pedra: 1 },
   cozinha: { madeira: 1, pedra: 2 },
-  laboratorio: { madeira: 4, pedra: 4 }
+  laboratorio: { madeira: 4, pedra: 4 },
+  gerador: { madeira: 2, pedra: 3 }
 };
 
 function maintenanceTotal(state) {
@@ -1163,8 +1552,27 @@ function payMaintenance(state) {
 const HOUSING_CAP = { quarto: 1, casa: 3, vila: 6 };
 let activeBuildingModal = null; // 'housing' | 'padaria' | 'cozinha' | 'laboratorio' | null
 
+/* Geradores: cada um tem produção fixa por estação e até GEN_MAX_ROBOTS robôs com recarga automática */
+const GEN_MAX_ROBOTS = 3;
+function syncGenerators(state) {
+  const n = (state.buildings && state.buildings.gerador) || 0;
+  state.generators = state.generators || [];
+  while (state.generators.length < n) state.generators.push({ auto: 0, robots: [] });
+  if (state.generators.length > n) state.generators.length = n;
+  const seen = new Set();
+  state.generators.forEach(g => {
+    g.auto = Math.max(0, g.auto || 0);
+    g.robots = (g.robots || []).filter(cid => {
+      if (seen.has(String(cid)) || !isRobotColonist(state, cid)) return false;
+      seen.add(String(cid));
+      return true;
+    }).slice(0, GEN_MAX_ROBOTS);
+  });
+}
+
 function syncBuildingsState(state) {
   state.buildings = state.buildings || {};
+  syncGenerators(state);
   state.housing = state.housing || {}; // { [colonistId]: 'quarto_0' | 'casa_1' | 'vila_0' }
   state.kitchenRecipes = state.kitchenRecipes || {}; // { [kitchenIdx]: 'meal' | 'veg' }
   state.labResearch = state.labResearch || {}; // { [labIdx]: topicKey }
@@ -1289,7 +1697,7 @@ function buildingModalHtml(state, team, locked) {
         return `
           <div class="assign-row">
             <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
-              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}${powerNote(state, c)}${skillNote(state, c, key)}</span>
               <small style="color:#9fb0ff">🍳 Culinária: <strong>${c.culinaria}</strong> · Limite: <strong>${maxBread} pães</strong> (🌾1 → 🥖2)</small>
             </span>
             <span style="display:flex; gap:5px; flex-shrink:0">
@@ -1338,7 +1746,7 @@ function buildingModalHtml(state, team, locked) {
         return `
           <div class="assign-row">
             <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
-              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}${powerNote(state, c)}${skillNote(state, c, key)}</span>
               <small style="color:#9fb0ff">🍳 Culinária: <strong>${c.culinaria}</strong> (até ${c.culinaria} porções)</small>
             </span>
             <span style="display:flex; gap:5px; flex-shrink:0">
@@ -1358,7 +1766,7 @@ function buildingModalHtml(state, team, locked) {
           </div>
           <div class="chip-row">
             <button type="button" class="chip-btn btn-kitchen-recipe${recipe === 'meal' ? ' active' : ''}" data-idx="${i}" data-rec="meal" ${locked ? 'disabled' : ''}>🍽️ Refeição (🥩1 + 🍚1)</button>
-            <button type="button" class="chip-btn btn-kitchen-recipe${recipe === 'veg' ? ' active' : ''}" data-idx="${i}" data-rec="veg" ${locked ? 'disabled' : ''}>🥗 Ref. Vegetariana (🌾2)</button>
+            <button type="button" class="chip-btn btn-kitchen-recipe${recipe === 'veg' ? ' active' : ''}" data-idx="${i}" data-rec="veg" ${locked ? 'disabled' : ''}>🥗 Ref. Vegetariana (🥬1 + 🍚1)</button>
           </div>
           ${workers}
         </div>`;
@@ -1377,16 +1785,123 @@ function buildingModalHtml(state, team, locked) {
       </div>`;
   }
 
+  if (activeBuildingModal === 'gerador') {
+    const n = state.buildings.gerador || 0;
+    const wood = state.resources.madeira || 0;
+    const energy = state.resources.energia || 0;
+    const robots = team.filter(c => isRobotColonist(state, c.id));
+    const totalMissing = robots.reduce((a, c) => a + (ROBOT_ENERGY_MAX - state.robotEnergy[c.id]), 0);
+    const convBtn = (label, amount) => `<button type="button" class="ok btn-gen-convert" data-n="${amount}" style="padding:5px 9px; font-size:.78rem" ${wood < 1 ? 'disabled' : ''}>${label}</button>`;
+
+    const robotsHtml = robots.length ? robots.map(c => {
+      const e = state.robotEnergy[c.id];
+      const missing = ROBOT_ENERGY_MAX - e;
+      const canCharge = missing > 0 && energy > 0;
+      return `
+        <div class="assign-row">
+          <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
+            <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong></span>
+            ${energyBadge(state, c)}
+          </span>
+          <button type="button" class="ok btn-gen-charge" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem; flex-shrink:0" ${canCharge ? '' : 'disabled'}>${missing <= 0 ? 'Cheio' : `Recarregar (+${Math.min(missing, energy)}⚡)`}</button>
+        </div>`;
+    }).join('') : '<small style="opacity:.65">Nenhum robô na colônia.</small>';
+
+    const fixedAnywhere = new Set((state.generators || []).flatMap(g => g.robots.map(String)));
+    const genCards = (state.generators || []).map((g, gi) => {
+      const woodNeed = Math.ceil(g.auto / GENERATOR_RATE);
+      const fixedHtml = g.robots.map(cid => {
+        const c = team.find(x => String(x.id) === String(cid));
+        return `<button type="button" class="chip-btn active btn-gen-unfix" data-i="${gi}" data-cid="${cid}">📌 ${c ? `${RACA_ICONS[c.raca]} ${cName(c)}` : 'Robô'} ✕</button>`;
+      }).join('');
+      const addHtml = g.robots.length < GEN_MAX_ROBOTS
+        ? robots.filter(c => !fixedAnywhere.has(String(c.id))).map(c => `<button type="button" class="chip-btn btn-gen-fix" data-i="${gi}" data-cid="${c.id}">+ ${RACA_ICONS[c.raca]} ${cName(c)}</button>`).join('')
+        : '';
+      const stepBtn = (d, label) => `<button type="button" class="sec btn-gen-auto" data-i="${gi}" data-d="${d}" style="padding:4px 9px; font-size:.78rem" ${g.auto + d < 0 ? 'disabled' : ''}>${label}</button>`;
+      return `
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>⚡ Gerador #${gi + 1}</strong>
+            <span class="hunger ${g.robots.length >= GEN_MAX_ROBOTS ? 'soon' : 'ok'}">${g.robots.length}/${GEN_MAX_ROBOTS} robôs fixos</span>
+          </div>
+          <div style="font-size:.8rem">Produção fixa por estação:</div>
+          <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap">
+            ${stepBtn(-5, '−5')}${stepBtn(-1, '−1')}
+            <strong style="min-width:70px; text-align:center">⚡ ${g.auto}</strong>
+            ${stepBtn(1, '+1')}${stepBtn(5, '+5')}
+          </div>
+          <small style="opacity:.75">${g.auto > 0 ? `Consome até 🪵 ${woodNeed} por estação. Se faltar lenha, produz o máximo possível.` : 'Desligada: não produz energia sozinha.'}</small>
+          <div style="font-size:.8rem; margin-top:4px">Robôs fixos (recarregados todo fim de estação com a energia da colônia):</div>
+          <div class="chip-row">${fixedHtml || '<small style="opacity:.65">Nenhum robô fixo.</small>'}</div>
+          ${addHtml ? `<div class="chip-row">${addHtml}</div>` : ''}
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="modal-sheet">
+        <div style="display:flex; justify-content:space-between; align-items:center">
+          <strong>⚡ Gerador à Lenha (${n})</strong>
+          <button type="button" class="sec btn-bmodal-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
+        </div>
+        <div style="font-size:.78rem; opacity:.78">
+          Converte <strong>🪵 madeira</strong> em <strong>⚡ energia</strong> (1 🪵 → ${GENERATOR_RATE} ⚡). Não precisa de colono.
+          Cada robô gasta <strong>${ROBOT_ENERGY_USE}⚡ por estação</strong>; com menos que isso ele fica desligado.
+        </div>
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>🔥 Converter lenha</strong>
+            <span class="hunger ok">🪵 ${wood} · ⚡ ${energy}</span>
+          </div>
+          <div class="chip-row">
+            ${convBtn('+1 ⚡', 1)}${convBtn('+5 ⚡', 5)}${convBtn('Converter tudo', 'all')}
+          </div>
+        </div>
+        <div class="field-card">
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <strong>🤖 Recarregar Robôs</strong>
+            ${robots.length ? `<button type="button" class="ok btn-gen-charge-all" style="padding:5px 9px; font-size:.78rem" ${totalMissing > 0 && energy > 0 ? '' : 'disabled'}>Recarregar todos</button>` : ''}
+          </div>
+          ${robotsHtml}
+        </div>
+        ${genCards}
+      </div>`;
+  }
+
   if (activeBuildingModal === 'laboratorio') {
     const n = state.buildings.laboratorio || 0;
-    const topics = [
-      { key: 'agricultura_av', label: '🌱 Agronomia Avançada' },
-      { key: 'engenharia', label: '🏗️ Engenharia Colonial' },
-      { key: 'biotecnologia', label: '🧬 Biotecnologia' }
-    ];
+    const rs = researchState(state);
+    const topics = Object.keys(RESEARCH_TREE).filter(k => researchAvailable(state, k)).map(k => ({ key: k, label: RESEARCH_TREE[k].label }));
+    const statLabel = ks => ks.map(k => { const s = STATS.find(x => x.k === k); return `${s.i} ${s.n}`; }).join(' · ');
+    const nodeHtml = (key, depth) => {
+      const t = RESEARCH_TREE[key];
+      const done = Boolean(rs.done[key]);
+      const avail = researchAvailable(state, key);
+      const prog = Math.min(t.cost, rs.progress[key] || 0);
+      const pct = Math.round(prog / t.cost * 100);
+      const kids = Object.keys(RESEARCH_TREE).filter(k => RESEARCH_TREE[k].requires.includes(key)).map(k => nodeHtml(k, depth + 1)).join('');
+      return `
+        <div style="margin-left:${depth ? 14 : 0}px; ${depth ? 'border-left:2px solid #3a4496; padding-left:8px;' : ''}">
+          <div class="planet-info" style="border-color:${done ? '#51cf66' : (avail ? '#4c5bd4' : '#3a3f66')}">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:6px">
+              <strong>${t.label}</strong>
+              <span class="hunger ${done ? 'ok' : (avail ? 'soon' : 'hungry')}">${done ? '✅ Concluída' : (avail ? 'Disponível' : '🔒 Bloqueada')}</span>
+            </div>
+            <small style="opacity:.8">${t.desc}</small>
+            <small style="color:#9fb0ff">Custo: 📚 ${t.cost} conhecimento · Pesquisa: ${statLabel(RESEARCH_STATS)} · Relacionadas: ${statLabel(t.stats)}</small>
+            <div style="height:7px; background:#0b0e24; border-radius:4px; overflow:hidden"><div style="height:100%; width:${pct}%; background:${done ? '#51cf66' : '#748ffc'}"></div></div>
+            <small style="opacity:.75">📚 ${done ? t.cost : prog}/${t.cost}</small>
+          </div>
+          ${kids}
+        </div>`;
+    };
+    const treeHtml = `
+      <div class="field-card">
+        <strong>🌳 Árvore de Pesquisa</strong>
+        ${Object.keys(RESEARCH_TREE).filter(k => !RESEARCH_TREE[k].requires.length).map(k => nodeHtml(k, 0)).join('')}
+      </div>`;
     const cards = Array.from({ length: n }, (_, i) => {
       const key = 'lab_' + i;
-      const topic = (state.labResearch || {})[i] || topics[0].key;
+      const topic = labTopic(state, i);
       const workerId = Object.keys(state.assignments).find(cid => state.assignments[cid] === key);
       const workers = team.map(c => {
         const isWorker = String(c.id) === workerId;
@@ -1396,14 +1911,14 @@ function buildingModalHtml(state, team, locked) {
         return `
           <div class="assign-row">
             <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
-              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
-              <small style="color:#9fb0ff">🧠 Inteligência: <strong>${c.inteligencia}</strong></small>
+              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}${powerNote(state, c)}${skillNote(state, c, key)}</span>
+              <small style="color:#9fb0ff">📚 Conhecimento/estação: <strong>${topic ? researchKnowledge(c, topic) : 0}</strong> <span style="opacity:.7">(🧠${c.inteligencia} 🔍${c.curiosidade}${topic ? RESEARCH_TREE[topic].stats.map(k => { const s = STATS.find(x => x.k === k); return ` ${s.i}${c[k]}`; }).join('') : ''})</span></small>
             </span>
             <span style="display:flex; gap:5px; flex-shrink:0">
               ${isWorker
                 ? `<button type="button" class="${pinned ? 'ok' : 'sec'} btn-bmodal-pin" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>📌${pinned ? ' Fixado' : ''}</button>
                    <button type="button" class="danger btn-bmodal-clear" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>Remover</button>`
-                : `<button type="button" class="ok btn-bmodal-set" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked ? 'disabled' : ''}>${elsewhere ? 'Trocar' : 'Pesquisar'}</button>`}
+                : `<button type="button" class="ok btn-bmodal-set" data-key="${key}" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${locked || !topic ? 'disabled' : ''}>${elsewhere ? 'Trocar' : 'Pesquisar'}</button>`}
             </span>
           </div>`;
       }).join('');
@@ -1415,7 +1930,7 @@ function buildingModalHtml(state, team, locked) {
             <span class="hunger ${workerId ? 'ok' : 'soon'}">${workerId ? 'Pesquisando' : 'Livre'}</span>
           </div>
           <div class="chip-row">
-            ${topics.map(t => `<button type="button" class="chip-btn btn-lab-topic${topic === t.key ? ' active' : ''}" data-idx="${i}" data-topic="${t.key}" ${locked ? 'disabled' : ''}>${t.label}</button>`).join('')}
+            ${topics.length ? topics.map(t => `<button type="button" class="chip-btn btn-lab-topic${topic === t.key ? ' active' : ''}" data-idx="${i}" data-topic="${t.key}" ${locked ? 'disabled' : ''}>${t.label}</button>`).join('') : '<small style="opacity:.7">Nenhuma pesquisa disponível.</small>'}
           </div>
           ${workers}
         </div>`;
@@ -1428,8 +1943,9 @@ function buildingModalHtml(state, team, locked) {
           <button type="button" class="sec btn-bmodal-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
         </div>
         <div style="font-size:.78rem; opacity:.78">
-          Designe um cientista (1 por laboratório) para conduzir pesquisas usando <strong>Inteligência (🧠)</strong>.
+          Designe um cientista (1 por laboratório). Ele produz por estação <strong>📚 conhecimento = média</strong> de Inteligência, Curiosidade e das habilidades relacionadas à pesquisa.
         </div>
+        ${treeHtml}
         ${cards}
       </div>`;
   }
@@ -1444,6 +1960,7 @@ function buildingModalHtml(state, team, locked) {
    - Colheita = Agricultura de quem plantou + Agricultura de quem colheu + modificador do clima (+3 Quente, +1 Temperado). */
 const CROPS = {
   trigo: { label: '🌾 Trigo', res: 'trigo' },
+  alface: { label: '🥬 Alface', res: 'alface' },
   arroz: { label: '🍚 Arroz', res: 'arroz' },
   algodao: { label: '🧶 Algodão', res: 'algodao' }
 };
@@ -1532,7 +2049,7 @@ function farmHtml(state, team, locked, planet, seasonIdx) {
           return `
             <div class="assign-row">
               <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
-                <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+                <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}${powerNote(state, c)}${skillNote(state, c, key)}</span>
                 <small style="color:#9fb0ff">🌾 Agricultura: <strong>${c.agricultura}</strong>${c.bonus === 'agricultura' ? '<span class="bonus-tag"> ✨+1</span>' : ''}${c.hungerPen ? `<span class="pen-tag"> (${c.hungerPen} fome)</span>` : ''}</small>
               </span>
               <span style="display:flex; gap:5px; flex-shrink:0">
@@ -1567,7 +2084,7 @@ function farmHtml(state, team, locked, planet, seasonIdx) {
           return `
             <div class="assign-row">
               <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
-                <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}</span>
+                <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${elsewhere ? `<small style="opacity:.65"> · em ${elsewhere.label}</small>` : ''}${powerNote(state, c)}${skillNote(state, c, key)}</span>
                 <small style="color:#9fb0ff">🌾 Agr.: <strong>${c.agricultura}</strong> · Colheita est.: <strong>${estYield}</strong>${c.hungerPen ? `<span class="pen-tag"> (${c.hungerPen} fome)</span>` : ''}</small>
               </span>
               <span style="display:flex; gap:5px; flex-shrink:0">
@@ -1599,1589 +2116,4 @@ function farmHtml(state, team, locked, planet, seasonIdx) {
       </div>
       <div style="font-size:.78rem; opacity:.75">
         Plante na <strong>Primavera</strong> e colha no <strong>Verão</strong> (ou o ano todo em <em>Sempre Verão</em>).
-        Colheita = Agricultura de quem plantou + Agricultura de quem colheu${climBonus ? ` + ${climBonus} (${clima})` : ''}.
-      </div>
-      ${cards}
-    </div>`;
-}
-
-/* ===== Alimentação =====
-   Colonos precisam de refeições a cada 4 estações. A contagem começa na 1ª estação,
-   então ninguém fica faminto antes da 5ª estação (quando já existem 4 estações anteriores).
-   Nebulians consomem apenas Refeições Vegetarianas. */
-const MEALS_PER_YEAR = { Humano: 4, Nebulians: 6, Drakthar: 8, 'Robô': 0, Floraks: 0 };
-let mealSel = null; // 'meal' | 'veg' | null
-
-function mealData(state, c) {
-  state.meals = state.meals || {};
-  if (!state.meals[c.id]) {
-    state.meals[c.id] = { hist: [], now: 0 };
-  }
-  return state.meals[c.id];
-}
-
-function hungerStatus(state, c) {
-  const need = MEALS_PER_YEAR[c.raca] || 0;
-  if (!need) return { key: 'none', label: 'Não precisa se alimentar', cls: 'ok' };
-  const d = mealData(state, c);
-  const hist = d.hist || [];
-  const sum = hist.reduce((a, b) => a + b, 0);
-
-  if (hist.length >= 4) {
-    if (sum === 0) return { key: 'starving', label: 'Extremamente Faminto (-3 hab.)', cls: 'starving' };
-    if (sum < need) return { key: 'hungry', label: 'Faminto (-1 hab.)', cls: 'hungry' };
-    const nextSum = hist.slice(1).reduce((a, b) => a + b, 0) + d.now;
-    if (nextSum < need) return { key: 'soon', label: 'Prestes a ficar faminto', cls: 'soon' };
-  } else if (hist.length === 3) {
-    if (sum + d.now < need) return { key: 'soon', label: 'Prestes a ficar faminto', cls: 'soon' };
-  }
-  return { key: 'fed', label: 'Alimentado', cls: 'ok' };
-}
-
-function canEatMealType(c, type) {
-  const need = MEALS_PER_YEAR[c.raca] || 0;
-  if (!need) return false;
-  if (type === 'bread') return c.raca === 'Humano' || c.raca === 'Drakthar' || c.raca === 'Nebulians';
-  if (type === 'veg') return c.raca === 'Nebulians';
-  if (type === 'meal') return c.raca === 'Humano' || c.raca === 'Drakthar';
-  return false;
-}
-
-function feedColonist(state, c, type = 'meal') {
-  if (!canEatMealType(c, type)) return false;
-  const resKey = type === 'veg' ? 'refeicoesVeg' : (type === 'bread' ? 'paes' : 'refeicoes');
-  if ((state.resources[resKey] || 0) < 1) return false;
-  state.resources[resKey] -= 1;
-  mealData(state, c).now += 1;
-  return true;
-}
-
-function feedingHtml(state, team) {
-  if (!mealSel) {
-    return '<div style="font-size:.78rem; opacity:.65; text-align:center">Toque em 🍽️ Refeições, 🥗 Ref. Vegetarianas ou 🥖 Pães para alimentar seus colonos.</div>';
-  }
-  const metaMap = {
-    meal: { count: state.resources.refeicoes || 0, label: 'Refeições', hint: 'Use Cozinhar na aba Tarefas.' },
-    veg: { count: state.resources.refeicoesVeg || 0, label: 'Refeições Vegetarianas', hint: 'Use Refeição Vegetariana na aba Tarefas.' },
-    bread: { count: state.resources.paes || 0, label: 'Pães', hint: 'Construa uma Padaria e use Assar Pão.' }
-  };
-  const info = metaMap[mealSel] || metaMap.meal;
-  return `<div style="font-size:.8rem; opacity:.85">Alimentar com <strong>${info.label}</strong> (não ocupa o colono):${info.count < 1 ? `<br><span style="color:#ff8a9a">Sem ${info.label.toLowerCase()}. ${info.hint}</span>` : ''}</div>` +
-    team.map(c => {
-      const need = MEALS_PER_YEAR[c.raca] || 0;
-      const hs = hungerStatus(state, c);
-      const d = mealData(state, c);
-      const hist = d.hist || [];
-      const sum = hist.reduce((a, b) => a + b, 0);
-      const allowed = canEatMealType(c, mealSel);
-      let whyNot = '';
-      if (need && !allowed) {
-        if (mealSel === 'veg') whyNot = `${c.raca} não come refeição vegetariana`;
-        else if (mealSel === 'meal') whyNot = 'Nebulians não comem refeição com carne';
-      }
-      return `
-        <div class="assign-row">
-          <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
-            <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong></span>
-            <span class="hunger ${hs.cls}" style="align-self:flex-start">${hs.label}</span>
-            ${need ? `<small style="opacity:.7">Estações anteriores (${hist.length}/4): ${sum}/${need} · nesta: ${d.now}</small>` : ''}
-            ${whyNot ? `<small style="color:#ffd43b">${whyNot}</small>` : ''}
-          </span>
-          ${need ? `<button type="button" class="ok btn-feed" data-cid="${c.id}" data-type="${mealSel}" style="padding:5px 9px; font-size:.78rem; flex-shrink:0" ${(!allowed || info.count < 1) ? 'disabled' : ''}>Alimentar</button>` : ''}
-        </div>`;
-    }).join('');
-}
-
-let activeCat = 'recursos';
-let activeActionKey = null; // tarefa selecionada (os colonos só aparecem depois de escolher uma)
-let tasksOpen = false;      // menu Tarefas aberto/fechado
-let openDrawer = null; // 'materiais' | 'alimentos' | 'planet' | 'colonists' | null
-let drawerColId = null; // colono aberto na gaveta de colonos
-
-function colonistDetailsHtml(c) {
-  const bonusStat = c.bonus ? STATS.find(s => s.k === c.bonus) : null;
-  const notes = [];
-  if (bonusStat) {
-    notes.push(`<div class="bonus-tag" style="margin-top:5px; font-size:.78rem">✨ Ponto extra de sintonia: +1 em ${bonusStat.n}</div>`);
-  }
-  if (c.hungerPen) {
-    const label = c.hungerPen === -3 ? 'Extremamente Faminto' : 'Faminto';
-    notes.push(`<div class="pen-tag" style="margin-top:4px; font-size:.78rem">⚠️ ${label}: ${c.hungerPen} em todas as habilidades</div>`);
-  }
-  if (c.housingPen) {
-    notes.push(`<div class="pen-tag" style="margin-top:4px; font-size:.78rem">🏚️ Desabrigado: ${c.housingPen} em todas as habilidades</div>`);
-  }
-  if (c.floraksMod !== undefined && c.floraksMod !== 0) {
-    const cls = c.floraksMod > 0 ? 'bonus-tag' : 'pen-tag';
-    const txt = c.floraksMod > 0 ? '+1 (Clima Sempre Verão)' : '-1 (Clima Sempre Inverno)';
-    notes.push(`<div class="${cls}" style="margin-top:4px; font-size:.78rem">🌱 Floraks Clima: ${txt} em todas as habilidades</div>`);
-  }
-  if (c.auroraMod) {
-    notes.push(`<div class="bonus-tag" style="margin-top:4px; font-size:.78rem">🌌 Aurora Boreal: +3 em todas as habilidades</div>`);
-  }
-  if (c.eclipseBoost) {
-    notes.push(`<div class="bonus-tag" style="margin-top:4px; font-size:.78rem">🌑 Pós-Eclipse: +5 em Criação e Suporte</div>`);
-  }
-  return notes.join('') + SECTORS.map(sec => `
-    <div class="sector-box" style="margin-top:5px">
-      <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(c, sec.key)}</span></div>
-      <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => {
-        const isBonus = c.bonus === s.k;
-        const totalPen = (c.hungerPen || 0) + (c.housingPen || 0);
-        const hasPen = totalPen < 0;
-        const cls = hasPen ? 'pen-tag' : (isBonus ? 'bonus-tag' : '');
-        const tags = [isBonus ? '+1' : '', hasPen ? `${totalPen}` : ''].filter(Boolean).join(', ');
-        return `<span>${s.i} ${s.n}: <strong${cls ? ` class="${cls}"` : ''}>${c[s.k]}</strong>${tags ? ` <small class="${cls}">(${tags})</small>` : ''}</span>`;
-      }).join('')}</div>
-    </div>`).join('');
-}
-
-function findActionDef(actionKey) {
-  const fm = /^farm_(\d+)$/.exec(actionKey || '');
-  if (fm) return { key: actionKey, label: `🌱 Campo ${+fm[1] + 1}`, stat: 'agricultura', field: +fm[1], catKey: 'plantacao' };
-  const bm = /^bakery_(\d+)$/.exec(actionKey || '');
-  if (bm) return { key: actionKey, label: `🥖 Padaria #${+bm[1] + 1}`, stat: 'culinaria', bakery: +bm[1], catKey: 'padaria' };
-  const km = /^kitchen_(\d+)$/.exec(actionKey || '');
-  if (km) return { key: actionKey, label: `🍳 Cozinha #${+km[1] + 1}`, stat: 'culinaria', kitchen: +km[1], catKey: 'cozinha' };
-  const lm = /^lab_(\d+)$/.exec(actionKey || '');
-  if (lm) return { key: actionKey, label: `🔬 Laboratório #${+lm[1] + 1}`, stat: 'inteligencia', lab: +lm[1], catKey: 'laboratorio' };
-  if (actionKey === 'build_capsula') {
-    return { key: 'build_capsula', label: '🚀 Cápsula de Emergência', building: 'capsula', catKey: 'construcao' };
-  }
-  for (const cat of ACTION_CATEGORIES) {
-    if (!cat.items) continue;
-    const found = cat.items.find(i => i.key === actionKey);
-    if (found) return { ...found, catKey: cat.key };
-  }
-  return null;
-}
-
-function getPlayerPlanetMeta(r, playerId) {
-  const entry = Object.entries(r.colonies || {}).find(([, owner]) => owner === playerId);
-  if (!entry) return { orbit: 'Desconhecida', clima: 'Temperado', oxigenio: '50%', recursos: 'Diversos' };
-  return (r.planetMeta || {})[entry[0]] || { orbit: 'Desconhecida', clima: 'Temperado', oxigenio: '50%', recursos: 'Diversos' };
-}
-
-function getMyTeam(r) {
-  const all = (r.colonists || {})[me.id] || [];
-  const chosenIds = (r.chosen || {})[me.id] || [];
-  return all.filter(c => chosenIds.includes(c.id));
-}
-
-function ensureColonyState(r, playerId) {
-  r.colonyStates = r.colonyStates || {};
-  if (!r.colonyStates[playerId]) {
-    r.colonyStates[playerId] = {
-      resources: { madeira: 0, pedra: 0, carne: 0, trigo: 0, arroz: 0, algodao: 0, paes: 0, refeicoes: 0, refeicoesVeg: 0 },
-      buildings: { quarto: 0, casa: 0, vila: 0, plantacao: 0, padaria: 0, cozinha: 0, laboratorio: 0 },
-      assignments: {},
-      pinned: {}
-    };
-  }
-  const s = r.colonyStates[playerId];
-  s.pinned = s.pinned || {};       // { [colonistId]: actionKey } colonos fixados em uma ação
-  s.pinFailed = s.pinFailed || {}; // { [colonistId]: true } fixados que não puderam ser designados
-  s.meals = s.meals || {};         // histórico de refeições por colono
-  s.bonuses = s.bonuses || {};     // { [colonistId]: habilidade } ponto extra de sintonia racial
-  s.synergy = s.synergy || {};     // { [raça]: true } raças que já atingiram a sintonia
-  s.notices = s.notices || [];     // avisos para o jogador
-  syncFields(s);
-  syncBuildingsState(s);
-  return s;
-}
-
-function renderColony(r) {
-  show('colony');
-  const state = ensureColonyState(r, me.id);
-  const planet = getPlayerPlanetMeta(r, me.id);
-  const mod = RESOURCE_MODIFIERS[planet.recursos] ?? 0;
-  const modStr = mod >= 0 ? `+${mod}` : `${mod}`;
-  // Colonos já com o ponto extra de sintonia somado (quando existir)
-  const team = getMyTeam(r).map(c => effectiveColonist(state, c));
-
-  // Faixa de tempo: planetas de clima fixo mostram "Sempre Verão ☀️" e a estação por número
-  const sIdx = (r.seasonIdx || 0) % 4;
-  const fixedClimate = FIXED_CLIMATES[planet.clima];
-  $('seasonBanner').innerHTML = fixedClimate
-    ? `<small>${planet.clima} ${fixedClimate}</small>Ano ${r.year || 1} - ${SEASON_ORDINALS[sIdx]} Estação`
-    : `Ano ${r.year || 1} - ${SEASONS[sIdx].name} ${SEASONS[sIdx].icon}`;
-
-  // Gavetas do canto superior direito
-  $('btnTogglePlanet').classList.toggle('active', openDrawer === 'planet');
-  $('btnToggleColonists').classList.toggle('active', openDrawer === 'colonists');
-  $('btnToggleMateriais').classList.toggle('active', openDrawer === 'materiais');
-  $('btnToggleAlimentos').classList.toggle('active', openDrawer === 'alimentos');
-
-  if (openDrawer === 'planet') {
-    $('drawerPlanet').style.display = 'flex';
-    $('drawerPlanet').innerHTML = `
-      <strong>🪐 Dados do Planeta</strong>
-      <div>🌟 <strong>Órbita:</strong> ${esc(planet.orbit)}</div>
-      <div>🌡️ <strong>Clima:</strong> ${esc(planet.clima)}</div>
-      <div>🫧 <strong>Oxigênio:</strong> ${esc(planet.oxigenio)}</div>
-      <div>⛏️ <strong>Recursos Naturais:</strong> ${esc(planet.recursos)} (${modStr})</div>
-      <div>🌙 <strong>Luas:</strong> ${planet.luas !== undefined ? planet.luas : 0}</div>
-    `;
-  } else {
-    $('drawerPlanet').style.display = 'none';
-  }
-
-  if (openDrawer === 'colonists') {
-    $('drawerColonists').style.display = 'flex';
-    $('drawerColonists').innerHTML = `<strong>🧑‍🚀 Seus Colonos</strong>` + team.map(c => {
-      const assignedKey = state.assignments[c.id];
-      const actDef = assignedKey ? findActionDef(assignedKey) : null;
-      const hs = hungerStatus(state, c);
-      return `
-        <div class="dcol${drawerColId === c.id ? ' open' : ''}" data-cid="${c.id}">
-          <div style="display:flex; justify-content:space-between; font-weight:700;">
-            <span>${RACA_ICONS[c.raca]} ${cName(c)} <small style="opacity:.6; font-weight:400">${c.raca}</small></span>
-            <span style="font-size:.75rem; color:#9fb0ff">${actDef ? actDef.label : 'Livre'}${(state.pinned || {})[c.id] ? ' 📌' : ''}</span>
-          </div>
-          <div class="dcol-avg">${SECTORS.map(sec => `<div><span>${sec.key}</span><strong>${getSectorAvg(c, sec.key)}</strong></div>`).join('')}</div>
-          <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px">
-            ${hs.key !== 'none' ? `<span class="hunger ${hs.cls}">${hs.label}</span>` : ''}
-            <span class="hunger ${isHomeless(state, c) ? 'hungry' : 'ok'}">🏠 ${getColonistHomeLabel(state, c)}</span>
-          </div>
-          ${drawerColId === c.id ? colonistDetailsHtml(c) : '<div style="font-size:.7rem; opacity:.55; margin-top:3px">Toque para ver as qualidades</div>'}
-        </div>
-      `;
-    }).join('');
-  } else {
-    $('drawerColonists').style.display = 'none';
-  }
-
-  // Menu de Recursos (canto superior esquerdo): Materiais e Alimentos
-  const res = state.resources;
-  const resGroups = {
-    materiais: {
-      title: '🪵 Materiais',
-      items: [
-        ['🪵 Madeira', res.madeira],
-        ['🪨 Pedra', res.pedra],
-        ['🧶 Algodão', res.algodao]
-      ]
-    },
-    alimentos: {
-      title: '🍖 Alimentos',
-      items: [
-        ['🥩 Carne', res.carne],
-        ['🌾 Trigo', res.trigo],
-        ['🍚 Arroz', res.arroz],
-        ['🥖 Pães', res.paes, 'bread'],
-        ['🍽️ Refeições', res.refeicoes, 'meal'],
-        ['🥗 Ref. Vegetarianas', res.refeicoesVeg, 'veg']
-      ]
-    }
-  };
-  const grp = resGroups[openDrawer];
-  if (grp) {
-    $('drawerResources').style.display = 'flex';
-    $('drawerResources').innerHTML = `<strong>${grp.title}</strong>` +
-      grp.items.map(([n, v, k]) => k
-        ? `<div class="res-item selectable btn-meal${mealSel === k ? ' selected' : ''}" data-mtype="${k}"><span>${n}</span><strong>${v || 0}</strong></div>`
-        : `<div class="res-item"><span>${n}</span><strong>${v || 0}</strong></div>`).join('') +
-      (openDrawer === 'alimentos' ? feedingHtml(state, team) : '');
-  } else {
-    $('drawerResources').style.display = 'none';
-  }
-
-  // Painel Central: Gerenciador de Construções + Resumo da Estação
-  const bld = state.buildings;
-  // Só aparecem as construções que já existem; sem nenhuma, mostra uma mensagem
-  const built = BUILDING_LIST.filter(b => (bld[b.key] || 0) > 0);
-  $('colonyBuildings').innerHTML = built.length
-    ? built.map(b => `
-    <div class="build-card clickable" data-b="${b.key}">
-      <div class="b-icon">${b.icon}</div>
-      <div class="b-name">${b.label}</div>
-      <div class="b-count">× ${bld[b.key]}</div>
-      <div class="b-hint">Toque para gerenciar</div>
-    </div>
-  `).join('')
-    : `<div class="build-empty">
-         <div style="font-size:1.8rem">🌌</div>
-         <div>Nada foi erguido ainda.</div>
-         <div style="opacity:.65; font-size:.8rem">Os primeiros abrigos da sua colônia aparecerão aqui.</div>
-       </div>`;
-
-  // Custo total de manutenção, sempre visível
-  $('colonyMaint').innerHTML = `
-    <span>🔧 Manutenção anual <small style="opacity:.65">(paga ${fixedClimate ? 'no fim do ano' : 'no fim do inverno'})</small></span>
-    <strong>${maintenanceText(maintenanceTotal(state))}</strong>`;
-
-  const assignedEntries = Object.entries(state.assignments || {});
-  $('colonyAssignedSummary').innerHTML = assignedEntries.length
-    ? `<div class="panel-title" style="margin-top:6px">Tarefas desta Estação</div>` + assignedEntries.map(([cid, aKey]) => {
-        const col = team.find(c => c.id === +cid);
-        const def = findActionDef(aKey);
-        if (!col || !def) return '';
-        return `<div style="display:flex; justify-content:space-between; background:#0b0e24; padding:5px 8px; border-radius:6px;">
-          <span>${RACA_ICONS[col.raca]} ${cName(col)}</span>
-          <span>${def.label}${(state.pinned || {})[cid] === aKey ? ' 📌' : ''}</span>
-        </div>`;
-      }).join('')
-    : `<div style="opacity:.6; text-align:center; padding-top:6px">Nenhum colono designado nesta estação.</div>`;
-
-  // Menu Inferior: Abas de Categorias
-  $('catTabs').innerHTML = ACTION_CATEGORIES.map(cat => `
-    <button type="button" class="cat-tab${activeCat === cat.key ? ' active' : ''}" data-cat="${cat.key}" ${cat.disabled ? 'disabled' : ''}>
-      ${cat.disabled ? `🔒 ${cat.label}` : cat.label}
-    </button>
-  `).join('');
-
-  const currentCat = ACTION_CATEGORIES.find(c => c.key === activeCat) || ACTION_CATEGORIES[0];
-  if (!currentCat.items || !currentCat.items.some(i => i.key === activeActionKey)) {
-    activeActionKey = null; // nenhuma tarefa selecionada: colonos ficam escondidos
-  }
-
-  let catItems = [...(currentCat.items || [])];
-  if (currentCat.key === 'construcao' && state.visitorAccepted && !(state.buildings.capsula > 0)) {
-    catItems.push({ key: 'build_capsula', label: '🚀 Cápsula de Emergência (4 est.)', building: 'capsula' });
-  }
-  if (!catItems.some(i => i.key === activeActionKey)) {
-    activeActionKey = null;
-  }
-  $('subOpts').innerHTML = catItems.map(item => {
-    const cost = costText(actionCost(item));
-    return `
-    <button type="button" class="sub-opt${activeActionKey === item.key ? ' active' : ''}" data-act="${item.key}">
-      ${item.label}${cost ? ` · ${cost}` : ''}
-    </button>
-  `;
-  }).join('');
-
-  // Designação de Colonos para a Ação/Expedição selecionada
-  const actDef = findActionDef(activeActionKey);
-  const ready = Boolean((r.seasonReady || {})[me.id]);
-
-  if (!actDef) {
-    $('assignBox').innerHTML = `<div style="opacity:.7; text-align:center">Escolha uma tarefa acima para ver os colonos.</div>`;
-  } else {
-    const newCost = actionCost(actDef);
-    const newCostTxt = costText(newCost);
-    const actStats = actionStats(actDef);
-    const skillsTitle = actStats.length ? actStats.map(s => `${s.i} ${s.n}`).join(' · ') : 'nenhuma específica';
-    const isBakery = actDef.key === 'assar_pao';
-    const bakeryCap = state.buildings.padaria || 0;
-    const bakeryUsed = Object.values(state.assignments || {}).filter(k => k === 'assar_pao').length;
-    const bakeryFull = isBakery && bakeryUsed >= bakeryCap;
-    const bakeryInfo = isBakery
-      ? `<div style="font-size:.78rem; color:${bakeryCap ? '#9fb0ff' : '#ff8a9a'}">🥖 Padarias: ${bakeryUsed}/${bakeryCap} ocupadas (1 colono por padaria · limite: 2× Culinária)</div>`
-      : '';
-
-    $('assignBox').innerHTML = `
-      <div style="font-weight:700; color:#9fb0ff">Designar colono para: ${actDef.label}${newCostTxt ? ` <span style="font-weight:400">(custo por colono: ${newCostTxt})</span>` : ''}</div>
-      <div style="font-size:.8rem; opacity:.85">Habilidades da tarefa: ${skillsTitle}</div>
-      ${bakeryInfo}
-      ${team.map(c => {
-        const curAct = state.assignments[c.id];
-        const isThis = curAct === actDef.key;
-        const curDef = curAct ? findActionDef(curAct) : null;
-        const skillsHtml = actStats.length
-          ? `<small style="color:#9fb0ff">${actStats.map(s => `${s.i} ${s.n}: <strong>${c[s.k]}</strong>${c.bonus === s.k ? '<span class="bonus-tag"> ✨+1</span>' : ''}${c.hungerPen ? `<span class="pen-tag"> (${c.hungerPen} fome)</span>` : ''}`).join(' · ')}${isBakery ? ` · Limite: <strong>${c.culinaria * 2} pães</strong>` : ''}</small>`
-          : '<small style="opacity:.6">Sem habilidade específica</small>';
-        const eff = { ...state.resources };
-        if (curDef) refundCost(eff, actionCost(curDef));
-        const affordable = canPay(eff, newCost);
-        const isCapsule = actDef.key === 'build_capsula';
-        const capsuleSkillOk = !isCapsule || ((c.construcao || 0) >= 5 && (c.fabricacao || 0) >= 5);
-        const capsuleOccupied = isCapsule && !isThis && Object.values(state.assignments || {}).includes('build_capsula');
-        const eclipseBlocked = state.eclipseActive && (c.raca === 'Humano' || c.raca === 'Drakthar');
-        const slotBlocked = !isThis && (bakeryFull || !capsuleSkillOk || capsuleOccupied || eclipseBlocked);
-        const pinKey = state.pinned[c.id];
-        const pinDef = pinKey ? findActionDef(pinKey) : null;
-        const pinnedHere = pinKey === actDef.key;
-        const pinNote = pinDef && !pinnedHere ? `<small style="color:#ffd54a"> · 📌 ${pinDef.label}</small>` : '';
-        const failNote = state.pinFailed[c.id] && !curAct ? '<small style="color:#ff8a9a"> · ⚠️ fixado, sem recurso/vaga</small>' : '';
-        let blockReason = '';
-        if (eclipseBlocked) blockReason = ' · 🌑 em casa (Eclipse)';
-        else if (!isThis && !capsuleSkillOk) blockReason = ' · requer 🏗️5 e 🔧5';
-        else if (!isThis && capsuleOccupied) blockReason = ' · já em construção';
-        else if (!isThis && !affordable) blockReason = ' · falta recurso';
-        else if (slotBlocked) blockReason = bakeryCap ? ' · padarias cheias' : ' · requer Padaria';
-        return `
-          <div class="assign-row">
-            <span style="display:flex; flex-direction:column; gap:2px; min-width:0">
-              <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong>${blockReason ? `<small style="color:#ff8a9a">${blockReason}</small>` : ''}${pinNote}${failNote}</span>
-              ${skillsHtml}
-            </span>
-            <span style="display:flex; gap:5px; align-items:center; flex-shrink:0">
-              <button type="button" class="${pinnedHere ? 'ok' : 'sec'} btn-pin" data-cid="${c.id}" title="Fixar nesta ação" style="padding:5px 9px; font-size:.78rem" ${ready || (isBakery && !bakeryCap && !pinnedHere) ? 'disabled' : ''}>📌${pinnedHere ? ' Fixado' : ''}</button>
-              ${isThis
-                ? `<button type="button" class="danger btn-unassign" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${ready ? 'disabled' : ''}>Remover</button>`
-                : `<button type="button" class="ok btn-assign" data-cid="${c.id}" style="padding:5px 9px; font-size:.78rem" ${ready || !affordable || slotBlocked ? 'disabled' : ''}>${curDef ? 'Trocar' : 'Designar'}</button>`
-              }
-            </span>
-          </div>
-        `;
-      }).join('')}
-    `;
-  }
-
-  // Botão Próxima Estação e Contador
-  const readyCount = Object.keys(r.seasonReady || {}).length;
-  const totalPlayers = r.players.length;
-  $('readyCounter').textContent = `${readyCount}/${totalPlayers}`;
-  $('btnNextSeason').textContent = ready ? 'Aguardando... (cancelar)' : 'Próxima Estação';
-  $('btnNextSeason').className = ready ? 'sec' : '';
-
-  // Botão Tarefas e Trabalho (menu inferior)
-  const assignedCount = Object.keys(state.assignments || {}).length;
-  $('btnTasks').textContent = `📋 Tarefas${assignedCount ? ` (${assignedCount})` : ''} ${tasksOpen ? '▼' : '▲'}`;
-  $('btnTasks').classList.toggle('active', tasksOpen);
-  $('tasksSheet').style.display = tasksOpen ? 'flex' : 'none';
-
-  $('btnWork').textContent = `👷 Trabalho ${workOpen ? '▼' : '▲'}`;
-  $('btnWork').classList.toggle('active', workOpen);
-  $('workSheet').style.display = workOpen ? 'flex' : 'none';
-  if (workOpen) $('workSheet').innerHTML = renderWorkSheet(state, team, ready);
-
-  $('btnToggleMap').classList.toggle('active', mapOpen);
-  if (mapOpen) {
-    $('mapModal').style.display = 'flex';
-    $('mapModal').innerHTML = renderColonyMapModal(r);
-  } else {
-    $('mapModal').style.display = 'none';
-  }
-
-  // Avisos sutis da colônia
-  const notes = state.notices || [];
-  $('noticeBar').style.display = notes.length ? 'flex' : 'none';
-  $('noticeBar').innerHTML = notes.map(t => `<div>${esc(t)}</div>`).join('') +
-    '<button type="button" class="sec btn-notice-ok">OK</button>';
-
-  // Menu de Plantações (abre ao tocar na Plantação no gerenciador)
-  if (farmOpen && (bld.plantacao || 0) > 0) {
-    $('farmModal').style.display = 'flex';
-    $('farmModal').innerHTML = farmHtml(state, team, ready, planet, sIdx);
-  } else {
-    farmOpen = false;
-    $('farmModal').style.display = 'none';
-  }
-
-  if (activeBuildingModal) {
-    const validModal =
-      (activeBuildingModal === 'housing' && ((bld.quarto || 0) + (bld.casa || 0) + (bld.vila || 0) > 0)) ||
-      ((bld[activeBuildingModal] || 0) > 0);
-    if (validModal) {
-      $('buildingModal').style.display = 'flex';
-      $('buildingModal').innerHTML = buildingModalHtml(state, team, ready);
-    } else {
-      activeBuildingModal = null;
-      $('buildingModal').style.display = 'none';
-    }
-  } else {
-    $('buildingModal').style.display = 'none';
-  }
-
-  if (state.activeEventModal) {
-    $('eventModal').style.display = 'flex';
-    $('eventModal').innerHTML = renderEventModalHtml(state);
-  } else {
-    $('eventModal').style.display = 'none';
-  }
-}
-
-
-/* ===== Sistema de Eventos (Anos Pares) ===== */
-function isAdjacentToAsteroid(r, playerId) {
-  const entry = Object.entries(r.colonies || {}).find(([, owner]) => owner === playerId);
-  if (!entry) return false;
-  const [py, px] = entry[0].split(',').map(Number);
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      if (dy === 0 && dx === 0) continue;
-      const ny = py + dy, nx = px + dx;
-      if (ny >= 0 && ny < N && nx >= 0 && nx < N && r.map[ny][nx] === 'asteroides') return true;
-    }
-  }
-  return false;
-}
-
-function destroyRandomBuildingsPercent(state, maxPct) {
-  const pool = [];
-  BUILDING_LIST.forEach(b => {
-    if (b.key === 'capsula') return; // Cápsula não é destruída
-    for (let i = 0; i < (state.buildings[b.key] || 0); i++) pool.push(b);
-  });
-  if (!pool.length) return [];
-  const pct = (5 + rnd(maxPct - 4)) / 100; // até maxPct%
-  const toDestroy = Math.max(1, Math.floor(pool.length * pct));
-  shuffle(pool);
-  const destroyed = pool.slice(0, toDestroy);
-  destroyed.forEach(b => {
-    if (state.buildings[b.key] > 0) state.buildings[b.key]--;
-  });
-  syncFields(state);
-  syncBuildingsState(state);
-  return destroyed;
-}
-
-function triggerSeasonEvents(r) {
-  const year = r.year || 1;
-  const sIdx = (r.seasonIdx || 0) % 4;
-  r.yearEventsDone = r.yearEventsDone || {}; // { [playerId_year]: true }
-  r.solarFlareStars = r.solarFlareStars || {}; // { [starName_year]: true }
-
-  // Limpa estados de eventos da estação anterior
-  r.players.forEach(p => {
-    const state = ensureColonyState(r, p.id);
-    // Se houve eclipse na estação passada, ativa o bônus +5 em Fabricação e Suporte nesta estação
-    state.eclipseBoost = Boolean(state.eclipseActive);
-    state.eclipseActive = false;
-    state.auroraActive = false;
-  });
-
-
-  // Verificar chegada de viajantes da Rota de Fuga (após 3 estações)
-  r.players.forEach(p => {
-    const state = ensureColonyState(r, p.id);
-    if (state.pendingEscapees && state.pendingEscapees.length) {
-      const stillWaiting = [];
-      state.pendingEscapees.forEach(batch => {
-        batch.seasonsLeft -= 1;
-        if (batch.seasonsLeft <= 0) {
-          r.colonists[p.id] = r.colonists[p.id] || [];
-          r.chosen[p.id] = r.chosen[p.id] || [];
-          const slots = Math.max(0, MAX_COLONISTS - r.chosen[p.id].length);
-          const arriving = batch.travelers.slice(0, slots);
-          arriving.forEach(t => {
-            r.colonists[p.id].push(t);
-            r.chosen[p.id].push(t.id);
-          });
-          if (arriving.length) {
-            syncSynergy(r, p.id);
-            pushNotice(state, `🛸 Os fugitivos da Rota de Fuga chegaram à colônia: ${arriving.map(t => t.nome).join(' e ')}!`);
-          } else {
-            pushNotice(state, '🛸 Os fugitivos da Rota de Fuga chegaram, mas a colônia já atingiu o limite de 12 colonos.');
-          }
-        } else {
-          stillWaiting.push(batch);
-        }
-      });
-      state.pendingEscapees = stillWaiting;
-    }
-  });
-
-  if (year % 2 !== 0) return; // Eventos ocorrem apenas nos anos pares
-
-  // Primeiro: verificar se alguma estrela sofre Erupção Solar (afeta todos os planetas da órbita)
-  const starsList = Object.values(r.starNames || {});
-  starsList.forEach(starName => {
-    if (r.solarFlareStars[`${starName}_${year}`]) return;
-    // Chance proporcional por estação (1 em 4 estações se ainda não ocorreu no ano)
-    const remainingSeasons = 4 - sIdx;
-    if (Math.random() < (0.18 / remainingSeasons)) {
-      r.solarFlareStars[`${starName}_${year}`] = true;
-      r.players.forEach(p => {
-        const planet = getPlayerPlanetMeta(r, p.id);
-        if (planet.orbit === starName && !r.yearEventsDone[`${p.id}_${year}`]) {
-          r.yearEventsDone[`${p.id}_${year}`] = true;
-          const state = ensureColonyState(r, p.id);
-          const destroyed = destroyRandomBuildingsPercent(state, 40);
-          const desc = destroyed.length
-            ? `A estrela ${starName} sofreu uma violenta Erupção Solar! Todos os planetas de sua órbita foram atingidos e até 40% das construções foram destruídas (${destroyed.map(b => b.label).join(', ')}). Nenhum outro evento ocorrerá neste planeta este ano.`
-            : `A estrela ${starName} sofreu uma violenta Erupção Solar! Felizmente sua colônia não possuía construções vulneráveis, mas a radiação impede outros eventos neste planeta este ano.`;
-          state.activeEventModal = {
-            title: '☀️ Erupção Solar!',
-            desc,
-            type: 'solar_flare'
-          };
-        }
-      });
-    }
-  });
-
-  // Para cada jogador que ainda não teve evento no ano par
-  r.players.forEach(p => {
-    const key = `${p.id}_${year}`;
-    if (r.yearEventsDone[key]) return;
-    const state = ensureColonyState(r, p.id);
-    const planet = getPlayerPlanetMeta(r, p.id);
-
-    // Mesma chance de ocorrer em todas as estações (1 / estações restantes no ano)
-    const remainingSeasons = 4 - sIdx;
-    if (Math.random() >= (1 / remainingSeasons)) return;
-
-    r.yearEventsDone[key] = true;
-
-    // Ano 2: Sempre ocorre o Estranho Visitante
-    if (year === 2) {
-      const racas = Object.keys(RACAS);
-      const raca = racas[rnd(racas.length)];
-      const existingNames = new Set(((r.colonists || {})[p.id] || []).map(c => c.nome));
-      const visitor = makeColonist(Date.now() % 100000 + rnd(999), raca, pickName(raca, existingNames));
-      state.activeEventModal = {
-        title: '🛸 Estranho Visitante!',
-        desc: 'Um estranho visitante perdido neste planeta encontrou sua colônia! Ele aceita se juntar à sua equipe com a condição de que seja construída uma Cápsula de Emergência (custa 🪵 10 e 🪨 15, sem manutenção). Ele já possui o motor, mas um colono com 5 ou mais em Construção e Fabricação precisará trabalhar nela por 4 estações seguidas.',
-        type: 'visitor',
-        visitor
-      };
-      return;
-    }
-
-    // Demais anos pares: sorteia entre os eventos elegíveis para o planeta e estação
-    const candidates = ['crash_landing', 'escape_route'];
-    if (isAdjacentToAsteroid(r, p.id)) candidates.push('meteor_shower');
-    if ((planet.luas || 0) >= 1) candidates.push('eclipse');
-    if (sIdx === 3 || planet.clima === 'Sempre Inverno') candidates.push('aurora');
-
-    const chosen = candidates[rnd(candidates.length)];
-    if (chosen === 'meteor_shower') {
-      const destroyed = destroyRandomBuildingsPercent(state, 20);
-      state.activeEventModal = {
-        title: '☄️ Chuva de Meteoros!',
-        desc: destroyed.length
-          ? `Fragmentos do campo de asteroides vizinho atingiram o planeta! Até 20% das construções foram derrubadas: ${destroyed.map(b => b.label).join(', ')}.`
-          : 'Fragmentos do campo de asteroides vizinho cruzaram os céus do planeta, mas nenhuma construção foi atingida.',
-        type: 'meteor_shower'
-      };
-    } else if (chosen === 'eclipse') {
-      state.eclipseActive = true;
-      // Remove tarefas de Humanos e Drakthars nesta estação
-      teamOf(r, p.id).forEach(c => {
-        if (c.raca === 'Humano' || c.raca === 'Drakthar') {
-          const oldDef = state.assignments[c.id] ? findActionDef(state.assignments[c.id]) : null;
-          if (oldDef) refundCost(state.resources, actionCost(oldDef));
-          delete state.assignments[c.id];
-        }
-      });
-      state.activeEventModal = {
-        title: '🌑 Eclipse!',
-        desc: 'Uma das luas alinhou-se perfeitamente diante da estrela! Durante este eclipse, Humanos e Drakthars ficam em casa sem poder realizar tarefas. Na próxima estação, eles receberão +5 de bônus nas habilidades de Criação (Setor III) e Suporte (Setor IV)!',
-        type: 'eclipse'
-      };
-    } else if (chosen === 'crash_landing') {
-      const racas = Object.keys(RACAS);
-      const existingNames = new Set(((r.colonists || {})[p.id] || []).map(c => c.nome));
-      const count = 2 + rnd(3); // 2 a 4 viajantes
-      const travelers = Array.from({ length: count }, (_, idx) => {
-        const raca = racas[rnd(racas.length)];
-        return makeColonist((Date.now() + idx * 17 + rnd(500)) % 1000000, raca, pickName(raca, existingNames));
-      });
-      state.activeEventModal = {
-        title: '💥 Pouso Forçado!',
-        desc: `Uma nave danificada fez um pouso forçado próximo à sua colônia! ${count} viajantes sobreviveram. Você pode aceitar quantos quiser para sua equipe (respeitando o limite máximo de 12 colonos).`,
-        type: 'crash_landing',
-        travelers,
-        acceptedIds: []
-      };
-    } else if (chosen === 'escape_route') {
-      const racas = Object.keys(RACAS);
-      const existingNames = new Set(((r.colonists || {})[p.id] || []).map(c => c.nome));
-      const travelers = Array.from({ length: 2 }, (_, idx) => {
-        const raca = racas[rnd(racas.length)];
-        return makeColonist((Date.now() + idx * 31 + rnd(500)) % 1000000, raca, pickName(raca, existingNames));
-      });
-      state.activeEventModal = {
-        title: '🚨 Rota de Fuga!',
-        desc: 'Dois viajantes estão em rota de fuga pois não são mais bem-vindos em seu planeta. A nave deles transmite um sinal pedindo abrigo. Se você aceitar, ambos chegarão daqui 3 estações. Você deve aceitar os dois ou recusar ambos.',
-        type: 'escape_route',
-        travelers
-      };
-    } else if (chosen === 'aurora') {
-      state.auroraActive = true;
-      state.activeEventModal = {
-        title: '🌌 Aurora Boreal!',
-        desc: 'Luzes magníficas dançam pelo céu invernal! Inspirados pela beleza da Aurora Boreal, todos os colonos orgânicos recebem +3 em todas as habilidades durante esta estação (Robôs não são afetados).',
-        type: 'aurora'
-      };
-    }
-  });
-}
-
-function renderEventModalHtml(state) {
-  const ev = state.activeEventModal;
-  if (!ev) return '';
-
-  if (ev.type === 'visitor' && ev.visitor) {
-    const v = ev.visitor;
-    const rooms = load(), r = rooms[currentRoom];
-    const planet = r ? getPlayerPlanetMeta(r, me.id) : null;
-    const team = r ? getMyTeam(r).map(c => effectiveColonist(state, c, planet)) : [];
-    const atLimit = r ? !canAddColonists(r, me.id, 1) : false;
-
-    const eligibleCols = team.filter(c => (c.construcao || 0) >= 5 && (c.fabricacao || 0) >= 5);
-    const chosenBuilderId = ev.selectedBuilderId !== undefined ? ev.selectedBuilderId : null;
-
-    const profileHtml = SECTORS.map(sec => `
-      <div class="sector-box" style="margin-top:5px">
-        <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(v, sec.key)}</span></div>
-        <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${v[s.k]}</strong></span>`).join('')}</div>
-      </div>`).join('');
-
-    const buildersHtml = eligibleCols.length
-      ? eligibleCols.map(c => {
-          const isSel = String(chosenBuilderId) === String(c.id);
-          return `<button type="button" class="chip-btn btn-ev-pick-builder${isSel ? ' active' : ''}" data-cid="${c.id}">
-            ${RACA_ICONS[c.raca]} ${cName(c)} (🏗️${c.construcao} 🔧${c.fabricacao})
-          </button>`;
-        }).join('')
-      : `<div style="color:#ff8a9a; font-size:.82rem">⚠️ Nenhum colono possui 5+ em Construção e 5+ em Fabricação para construir a cápsula.</div>`;
-
-    const canAccept = !atLimit && chosenBuilderId !== null && eligibleCols.some(c => String(c.id) === String(chosenBuilderId));
-
-    return `
-      <div class="modal-sheet" style="border-color:#ffd54a; box-shadow: 0 0 30px rgba(255,213,74,.35)">
-        <div style="text-align:center; font-size:1.35rem; font-weight:800; color:#ffd54a">${ev.title}</div>
-        <p style="font-size:.88rem; line-height:1.4; text-align:center">${ev.desc}</p>
-        <div class="planet-info">
-          <div style="font-size:1rem"><strong>${RACA_ICONS[v.raca]} ${cName(v)}</strong> · <small>${v.raca}</small></div>
-          ${profileHtml}
-        </div>
-        <div class="planet-info" style="border-color:#4c5bd4">
-          <strong style="color:#9fb0ff">🚀 Designar Construtor Obrigatório (4 estações seguidas · 🪵10 🪨15):</strong>
-          <small style="opacity:.8">O colono ficará preso nesta tarefa até que os recursos sejam pagos e as 4 estações sejam concluídas.</small>
-          <div class="chip-row" style="margin-top:4px">${buildersHtml}</div>
-          ${atLimit ? '<div style="color:#ff8a9a; font-size:.8rem; margin-top:4px">⚠️ Limite máximo de 12 colonos atingido.</div>' : ''}
-        </div>
-        <div style="display:flex; gap:10px; margin-top:6px">
-          <button type="button" class="ok btn-ev-accept" style="flex:1" ${canAccept ? '' : 'disabled'}>Aceitar Visitante</button>
-          <button type="button" class="danger btn-ev-reject" style="flex:1">Recusar</button>
-        </div>
-      </div>`;
-  }
-
-
-  if (ev.type === 'crash_landing' && ev.travelers) {
-    const rooms = load(), r = rooms[currentRoom];
-    const currentCount = r ? getColonyCount(r, me.id) : 0;
-    const acceptedIds = ev.acceptedIds || [];
-    const remainingSlots = Math.max(0, MAX_COLONISTS - (currentCount + acceptedIds.length));
-
-    const cardsHtml = ev.travelers.map(t => {
-      const isAcc = acceptedIds.includes(t.id);
-      const profileHtml = SECTORS.map(sec => `
-        <div class="sector-box" style="margin-top:4px">
-          <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(t, sec.key)}</span></div>
-          <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${t[s.k]}</strong></span>`).join('')}</div>
-        </div>`).join('');
-
-      return `
-        <div class="planet-info" style="border-color:${isAcc ? '#51cf66' : '#2c3578'}">
-          <div style="display:flex; justify-content:space-between; align-items:center">
-            <span><strong>${RACA_ICONS[t.raca]} ${cName(t)}</strong> · <small>${t.raca}</small></span>
-            <button type="button" class="${isAcc ? 'ok' : 'sec'} btn-ev-toggle-traveler" data-tid="${t.id}" style="padding:5px 10px; font-size:.8rem" ${!isAcc && remainingSlots <= 0 ? 'disabled' : ''}>
-              ${isAcc ? '✅ Aceito' : '+ Aceitar'}
-            </button>
-          </div>
-          ${profileHtml}
-        </div>`;
-    }).join('');
-
-    return `
-      <div class="modal-sheet" style="border-color:#ff922b; box-shadow: 0 0 30px rgba(255,146,43,.35)">
-        <div style="text-align:center; font-size:1.35rem; font-weight:800; color:#ff922b">${ev.title}</div>
-        <p style="font-size:.88rem; line-height:1.4; text-align:center">${ev.desc}</p>
-        <div style="text-align:center; font-size:.8rem; color:#9fb0ff">Vagas disponíveis na colônia: <strong>${remainingSlots}</strong> (Máx. 12 colonos)</div>
-        ${cardsHtml}
-        <button type="button" class="ok btn-ev-confirm-crash" style="width:100%; margin-top:4px">Confirmar Seleção (${acceptedIds.length} aceito(s))</button>
-      </div>`;
-  }
-
-  if (ev.type === 'escape_route' && ev.travelers) {
-    const rooms = load(), r = rooms[currentRoom];
-    const canFitBoth = r ? canAddColonists(r, me.id, 2) : false;
-
-    const cardsHtml = ev.travelers.map(t => {
-      const profileHtml = SECTORS.map(sec => `
-        <div class="sector-box" style="margin-top:4px">
-          <div class="sector-title"><span>${sec.label}</span><span>Média: ${getSectorAvg(t, sec.key)}</span></div>
-          <div class="srow">${STATS.filter(s => s.cat === sec.key).map(s => `<span>${s.i} ${s.n}: <strong>${t[s.k]}</strong></span>`).join('')}</div>
-        </div>`).join('');
-
-      return `
-        <div class="planet-info">
-          <div><strong>${RACA_ICONS[t.raca]} ${cName(t)}</strong> · <small>${t.raca}</small></div>
-          ${profileHtml}
-        </div>`;
-    }).join('');
-
-    return `
-      <div class="modal-sheet" style="border-color:#cc5de8; box-shadow: 0 0 30px rgba(204,93,232,.35)">
-        <div style="text-align:center; font-size:1.35rem; font-weight:800; color:#cc5de8">${ev.title}</div>
-        <p style="font-size:.88rem; line-height:1.4; text-align:center">${ev.desc}</p>
-        ${!canFitBoth ? '<div style="color:#ff8a9a; text-align:center; font-size:.82rem">⚠️ É necessário ter pelo menos 2 vagas na colônia (máx. 12 colonos) para aceitar ambos.</div>' : ''}
-        ${cardsHtml}
-        <div style="display:flex; gap:10px; margin-top:6px">
-          <button type="button" class="ok btn-ev-accept-escape" style="flex:1" ${canFitBoth ? '' : 'disabled'}>Aceitar Ambos (chegam em 3 est.)</button>
-          <button type="button" class="danger btn-ev-reject" style="flex:1">Recusar Ambos</button>
-        </div>
-      </div>`;
-  }
-
-  return `
-    <div class="modal-sheet" style="border-color:#748ffc; box-shadow: 0 0 30px rgba(116,143,252,.4); text-align:center">
-      <div style="font-size:1.45rem; font-weight:800; color:#9fb0ff">${ev.title}</div>
-      <p style="font-size:.95rem; line-height:1.5; margin:8px 0">${ev.desc}</p>
-      <button type="button" class="ok btn-ev-close" style="width:100%">Entendido</button>
-    </div>`;
-}
-
-function resolveSeasonActions(r) {
-  r.players.forEach(p => {
-    const state = ensureColonyState(r, p.id);
-    const planet = getPlayerPlanetMeta(r, p.id);
-    const mod = RESOURCE_MODIFIERS[planet.recursos] ?? 0;
-    const allCols = (r.colonists || {})[p.id] || [];
-
-    Object.entries(state.assignments || {}).forEach(([cid, actKey]) => {
-      const baseCol = allCols.find(c => c.id === +cid);
-      const col = baseCol && effectiveColonist(state, baseCol, planet); // inclui o ponto extra de sintonia, se houver
-      const def = findActionDef(actKey);
-      if (!col || !def) return;
-
-      if (def.res && def.stat) {
-        // Materiais e Alimentos (cortar, minerar, caçar)
-        const gained = Math.max(0, (col[def.stat] || 0) + mod);
-        state.resources[def.res] = (state.resources[def.res] || 0) + gained;
-      } else if (def.field !== undefined) {
-        const f = (state.fields || [])[def.field];
-        if (!f) return;
-        const sIdx = r.seasonIdx || 0;
-        if (f.stage === 'empty' && f.crop && CROPS[f.crop] && canPlantNow(planet.clima, sIdx)) {
-          f.stage = 'planted';
-          f.plantedSkill = Math.max(0, col.agricultura || 0);
-          f.plantedBy = col.nome || `${col.raca} #${col.id + 1}`;
-        } else if (f.stage === 'planted' && f.crop && CROPS[f.crop] && canHarvestNow(planet.clima, sIdx)) {
-          const rs = CROPS[f.crop].res;
-          const totalYield = Math.max(0, (f.plantedSkill || 0) + (col.agricultura || 0) + harvestClimateBonus(planet.clima));
-          state.resources[rs] = (state.resources[rs] || 0) + totalYield;
-          f.stage = 'empty';
-          f.crop = null;
-          f.plantedSkill = 0;
-          f.plantedBy = '';
-        }
-      } else if (def.bakery !== undefined) {
-        const maxWheat = Math.max(0, col.culinaria || 0);
-        const wheatUsed = Math.min(maxWheat, state.resources.trigo || 0);
-        state.resources.trigo = (state.resources.trigo || 0) - wheatUsed;
-        state.resources.paes = (state.resources.paes || 0) + wheatUsed * 2;
-      } else if (def.kitchen !== undefined) {
-        const recipe = (state.kitchenRecipes || {})[def.kitchen] || 'meal';
-        const maxPortions = Math.max(0, col.culinaria || 0);
-        if (recipe === 'veg') {
-          const made = Math.min(maxPortions, Math.floor((state.resources.trigo || 0) / 2));
-          state.resources.trigo = (state.resources.trigo || 0) - made * 2;
-          state.resources.refeicoesVeg = (state.resources.refeicoesVeg || 0) + made;
-        } else {
-          const made = Math.min(maxPortions, state.resources.carne || 0, state.resources.arroz || 0);
-          state.resources.carne = (state.resources.carne || 0) - made;
-          state.resources.arroz = (state.resources.arroz || 0) - made;
-          state.resources.refeicoes = (state.resources.refeicoes || 0) + made;
-        }
-      } else if (def.lab !== undefined) {
-        state.researchPoints = (state.researchPoints || 0) + Math.max(0, col.inteligencia || 0);
-      } else if (def.building === 'capsula') {
-        if (!state.capsulePaid) {
-          const capCost = BUILD_COSTS.capsula;
-          if (canPay(state.resources, capCost)) {
-            payCost(state.resources, capCost);
-            state.capsulePaid = true;
-            state.capsuleProgress = 1;
-            state.pinned[cid] = 'build_capsula';
-            pushNotice(state, '🚀 Recursos pagos (🪵10 🪨15)! Construção da Cápsula de Emergência iniciada: 1/4 estações concluídas.');
-          } else {
-            state.pinned[cid] = 'build_capsula';
-            pushNotice(state, '🚀 Aguardando recursos (🪵10 🪨15) para iniciar a Cápsula de Emergência. O construtor permanece alocado na tarefa.');
-          }
-        } else {
-          state.capsuleProgress = (state.capsuleProgress || 0) + 1;
-          if (state.capsuleProgress >= 4) {
-            state.buildings.capsula = (state.buildings.capsula || 0) + 1;
-            delete state.pinned[cid];
-            state.capsuleBuilderId = null;
-            pushNotice(state, '🚀 A Cápsula de Emergência foi concluída e o construtor está livre novamente!');
-          } else {
-            state.pinned[cid] = 'build_capsula';
-            pushNotice(state, `🚀 Construção da Cápsula de Emergência: ${state.capsuleProgress}/4 estações concluídas.`);
-          }
-        }
-      } else if (def.catKey === 'construcao' && def.building) {
-        state.buildings[def.building] = (state.buildings[def.building] || 0) + 1;
-      }
-      // Expedições registradas para a estação (mecânicas de retorno podem ser expandidas depois)
-    });
-
-    state.assignments = {};
-
-    // Fim do inverno (4ª estação do ano): manutenção anual das construções
-    if ((r.seasonIdx || 0) % 4 === 3) payMaintenance(state);
-
-    // Fome: a estação que acabou entra no histórico das últimas 4;
-    // Se ficar 3 estações seguidas como Extremamente Faminto, o colono morre.
-    const deadIds = [];
-    teamOf(r, p.id).forEach(c => {
-      const d = mealData(state, c);
-      const h = d.hist || [];
-      d.hist = [...h.slice(-3), d.now];
-      d.now = 0;
-
-      const hs = hungerStatus(state, c);
-      if (hs.key === 'starving') {
-        d.starvingStreak = (d.starvingStreak || 0) + 1;
-        if (d.starvingStreak >= 3) {
-          deadIds.push(c.id);
-          pushNotice(state, `💀 ${c.nome || c.raca} morreu de fome após 3 estações seguidas extremamente faminto.`);
-        }
-      } else {
-        d.starvingStreak = 0;
-      }
-    });
-
-    if (deadIds.length) {
-      r.chosen[p.id] = (r.chosen[p.id] || []).filter(id => !deadIds.includes(id));
-      deadIds.forEach(id => {
-        delete state.pinned[id];
-        delete state.housing[id];
-        delete state.meals[id];
-      });
-    }
-
-    syncFields(state);
-    syncBuildingsState(state);
-    syncSynergy(r, p.id);
-
-    // Colonos fixados voltam sozinhos para a ação na nova estação (pagando o custo, se houver)
-    state.pinFailed = {};
-    Object.keys(state.pinned || {}).forEach(cid => {
-      if (!findActionDef(state.pinned[cid])) { delete state.pinned[cid]; return; }
-      if (!assignColonist(state, cid, state.pinned[cid])) state.pinFailed[cid] = true;
-    });
-  });
-}
-
-$('btnTogglePlanet').onclick = () => {
-  openDrawer = openDrawer === 'planet' ? null : 'planet';
-  renderLobby();
-};
-
-$('btnToggleColonists').onclick = () => {
-  openDrawer = openDrawer === 'colonists' ? null : 'colonists';
-  renderLobby();
-};
-
-$('btnToggleMateriais').onclick = () => {
-  openDrawer = openDrawer === 'materiais' ? null : 'materiais';
-  renderLobby();
-};
-
-$('btnToggleAlimentos').onclick = () => {
-  openDrawer = openDrawer === 'alimentos' ? null : 'alimentos';
-  renderLobby();
-};
-
-// Tocar em um colono da gaveta abre/fecha as qualidades dele
-$('drawerColonists').onclick = e => {
-  const card = e.target.closest('.dcol');
-  if (!card) return;
-  const id = +card.dataset.cid;
-  drawerColId = drawerColId === id ? null : id;
-  renderLobby();
-};
-
-// Tocar na Plantação (no gerenciador de construções) abre o menu de plantações
-$('colonyBuildings').onclick = e => {
-  const card = e.target.closest('.build-card');
-  if (!card) return;
-  const b = card.dataset.b;
-  if (b === 'plantacao') { farmOpen = true; renderLobby(); return; }
-  if (['quarto', 'casa', 'vila'].includes(b)) { activeBuildingModal = 'housing'; renderLobby(); return; }
-  if (['padaria', 'cozinha', 'laboratorio'].includes(b)) { activeBuildingModal = b; renderLobby(); return; }
-};
-
-
-$('eventModal').onclick = e => {
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r) return;
-  const state = ensureColonyState(r, me.id);
-  const ev = state.activeEventModal;
-  if (!ev) return;
-
-  if (e.target.closest('.btn-ev-close')) {
-    state.activeEventModal = null;
-    save(rooms); renderLobby();
-    return;
-  }
-
-  const pickBuilderBtn = e.target.closest('.btn-ev-pick-builder');
-  if (pickBuilderBtn && ev.type === 'visitor') {
-    ev.selectedBuilderId = +pickBuilderBtn.dataset.cid;
-    save(rooms); renderLobby();
-    return;
-  }
-
-  if (e.target.closest('.btn-ev-accept') && ev.visitor) {
-    if (ev.selectedBuilderId === undefined || ev.selectedBuilderId === null) return;
-    if (!canAddColonists(r, me.id, 1)) return;
-    const builderId = ev.selectedBuilderId;
-
-    // Devolve custo se o construtor estava em outra tarefa
-    const oldDef = state.assignments[builderId] ? findActionDef(state.assignments[builderId]) : null;
-    if (oldDef) refundCost(state.resources, actionCost(oldDef));
-
-    // Designa e trava o construtor na tarefa de construção da Cápsula de Emergência
-    state.assignments[builderId] = 'build_capsula';
-    state.pinned[builderId] = 'build_capsula';
-    state.capsuleBuilderId = builderId;
-    state.capsulePaid = false;
-    state.capsuleProgress = 0;
-
-    r.colonists[me.id] = r.colonists[me.id] || [];
-    r.chosen[me.id] = r.chosen[me.id] || [];
-    r.colonists[me.id].push(ev.visitor);
-    r.chosen[me.id].push(ev.visitor.id);
-    state.visitorAccepted = true;
-    state.activeEventModal = null;
-    syncSynergy(r, me.id);
-    pushNotice(state, `🛸 ${ev.visitor.nome} juntou-se à colônia! O construtor designado está alocado na Cápsula de Emergência (🪵10 🪨15 · 4 estações).`);
-    save(rooms); renderLobby();
-    return;
-  }
-
-  const toggleTravBtn = e.target.closest('.btn-ev-toggle-traveler');
-  if (toggleTravBtn && ev.type === 'crash_landing') {
-    const tid = +toggleTravBtn.dataset.tid;
-    ev.acceptedIds = ev.acceptedIds || [];
-    if (ev.acceptedIds.includes(tid)) {
-      ev.acceptedIds = ev.acceptedIds.filter(id => id !== tid);
-    } else if (canAddColonists(r, me.id, ev.acceptedIds.length + 1)) {
-      ev.acceptedIds.push(tid);
-    }
-    save(rooms); renderLobby();
-    return;
-  }
-
-  if (e.target.closest('.btn-ev-confirm-crash') && ev.type === 'crash_landing') {
-    const accepted = (ev.travelers || []).filter(t => (ev.acceptedIds || []).includes(t.id));
-    r.colonists[me.id] = r.colonists[me.id] || [];
-    r.chosen[me.id] = r.chosen[me.id] || [];
-    accepted.forEach(t => {
-      if (canAddColonists(r, me.id, 1)) {
-        r.colonists[me.id].push(t);
-        r.chosen[me.id].push(t.id);
-      }
-    });
-    state.activeEventModal = null;
-    syncSynergy(r, me.id);
-    pushNotice(state, accepted.length
-      ? `💥 Você acolheu ${accepted.map(t => t.nome).join(', ')} do pouso forçado!`
-      : '💥 Nenhum sobrevivente do pouso forçado foi integrado à colônia.');
-    save(rooms); renderLobby();
-    return;
-  }
-
-  if (e.target.closest('.btn-ev-accept-escape') && ev.type === 'escape_route') {
-    if (!canAddColonists(r, me.id, 2)) return;
-    state.pendingEscapees = state.pendingEscapees || [];
-    state.pendingEscapees.push({
-      seasonsLeft: 3,
-      travelers: ev.travelers
-    });
-    state.activeEventModal = null;
-    pushNotice(state, '🚨 Você aceitou o pedido de asilo! Os dois viajantes chegarão à colônia em 3 estações.');
-    save(rooms); renderLobby();
-    return;
-  }
-
-  if (e.target.closest('.btn-ev-reject')) {
-    state.activeEventModal = null;
-    pushNotice(state, '🛸 Você recusou a proposta.');
-    save(rooms); renderLobby();
-    return;
-  }
-};
-
-$('buildingModal').onclick = e => {
-  if (e.target === $('buildingModal') || e.target.closest('.btn-bmodal-close')) {
-    activeBuildingModal = null;
-    renderLobby();
-    return;
-  }
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r) return;
-  const state = ensureColonyState(r, me.id);
-  const team = getMyTeam(r);
-  const locked = Boolean((r.seasonReady || {})[me.id]);
-
-  // Moradias: adicionar/remover morador
-  const addHouseBtn = e.target.closest('.btn-house-add');
-  if (addHouseBtn) {
-    const unit = addHouseBtn.dataset.unit;
-    const cid = addHouseBtn.dataset.cid;
-    const bKey = unit.split('_')[0];
-    const cap = HOUSING_CAP[bKey] || 0;
-    const currentResidents = team.filter(c => (state.housing || {})[c.id] === unit);
-    const targetColonist = team.find(c => String(c.id) === String(cid));
-    if (currentResidents.length < cap && targetColonist) {
-      if (bKey === 'quarto' || currentResidents.length === 0 || currentResidents[0].raca === targetColonist.raca) {
-        state.housing[cid] = unit;
-        save(rooms); renderLobby();
-      }
-    }
-    return;
-  }
-  const remHouseBtn = e.target.closest('.btn-house-remove');
-  if (remHouseBtn) {
-    delete state.housing[remHouseBtn.dataset.cid];
-    save(rooms); renderLobby();
-    return;
-  }
-
-  if (locked) return;
-
-  // Receita da Cozinha
-  const recBtn = e.target.closest('.btn-kitchen-recipe');
-  if (recBtn) {
-    state.kitchenRecipes[+recBtn.dataset.idx] = recBtn.dataset.rec;
-    save(rooms); renderLobby();
-    return;
-  }
-
-  // Tema do Laboratório
-  const labBtn = e.target.closest('.btn-lab-topic');
-  if (labBtn) {
-    state.labResearch[+labBtn.dataset.idx] = labBtn.dataset.topic;
-    save(rooms); renderLobby();
-    return;
-  }
-
-  // Designar / Fixar / Remover trabalhador de Padaria, Cozinha ou Laboratório
-  const setBtn = e.target.closest('.btn-bmodal-set');
-  if (setBtn) {
-    const key = setBtn.dataset.key, cid = setBtn.dataset.cid;
-    [state.assignments, state.pinned].forEach(map => {
-      Object.keys(map).forEach(o => { if (map[o] === key && o !== String(cid)) delete map[o]; });
-    });
-    assignColonist(state, cid, key);
-    save(rooms); renderLobby();
-    return;
-  }
-  const pinBtn = e.target.closest('.btn-bmodal-pin');
-  if (pinBtn) {
-    const key = pinBtn.dataset.key, cid = pinBtn.dataset.cid;
-    if (state.pinned[cid] === key) delete state.pinned[cid];
-    else {
-      [state.assignments, state.pinned].forEach(map => {
-        Object.keys(map).forEach(o => { if (map[o] === key && o !== String(cid)) delete map[o]; });
-      });
-      assignColonist(state, cid, key);
-      state.pinned[cid] = key;
-    }
-    save(rooms); renderLobby();
-    return;
-  }
-  const clearBtn = e.target.closest('.btn-bmodal-clear');
-  if (clearBtn) {
-    delete state.assignments[clearBtn.dataset.cid];
-    save(rooms); renderLobby();
-    return;
-  }
-};
-
-$('farmModal').onclick = e => {
-  if (e.target === $('farmModal') || e.target.closest('.btn-farm-close')) { farmOpen = false; renderLobby(); return; }
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r || (r.seasonReady || {})[me.id]) return;
-  const state = ensureColonyState(r, me.id);
-
-  const cropBtn = e.target.closest('.btn-crop');
-  if (cropBtn) {
-    const i = +cropBtn.dataset.f, f = state.fields[i];
-    if (!f || f.stage === 'planted') return;
-    const planet = getPlayerPlanetMeta(r, me.id);
-    if (!canPlantNow(planet.clima, r.seasonIdx || 0)) return;
-    if (f.crop === cropBtn.dataset.crop) { f.crop = null; clearField(state, i); }
-    else f.crop = cropBtn.dataset.crop;
-    save(rooms); renderLobby(); return;
-  }
-  const setBtn = e.target.closest('.btn-field-set');
-  if (setBtn) {
-    assignToField(state, +setBtn.dataset.f, setBtn.dataset.cid);
-    save(rooms); renderLobby(); return;
-  }
-  const pinBtn = e.target.closest('.btn-field-pin');
-  if (pinBtn) {
-    const i = +pinBtn.dataset.f, cid = pinBtn.dataset.cid, key = 'farm_' + i;
-    if (state.pinned[cid] === key) delete state.pinned[cid];
-    else { assignToField(state, i, cid); state.pinned[cid] = key; }
-    save(rooms); renderLobby(); return;
-  }
-  const clearBtn = e.target.closest('.btn-field-clear');
-  if (clearBtn) {
-    delete state.assignments[clearBtn.dataset.cid]; // só nesta estação; se estiver fixado, volta na próxima
-    save(rooms); renderLobby();
-  }
-};
-
-// Menu de alimentos: selecionar Refeições (normal ou vegetariana) e alimentar colonos
-$('drawerResources').onclick = e => {
-  const mBtn = e.target.closest('.btn-meal');
-  if (mBtn) {
-    const t = mBtn.dataset.mtype;
-    mealSel = mealSel === t ? null : t;
-    renderLobby();
-    return;
-  }
-  const feed = e.target.closest('.btn-feed');
-  if (!feed) return;
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r) return;
-  const state = ensureColonyState(r, me.id);
-  const c = ((r.colonists || {})[me.id] || []).find(x => x.id === +feed.dataset.cid);
-  if (!c || !feedColonist(state, c, feed.dataset.type || 'meal')) return;
-  save(rooms); renderLobby();
-};
-
-// Fechar os avisos da colônia
-$('noticeBar').onclick = e => {
-  if (!e.target.closest('.btn-notice-ok')) return;
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r) return;
-  ensureColonyState(r, me.id).notices = [];
-  save(rooms); renderLobby();
-};
-
-$('btnTasks').onclick = () => {
-  tasksOpen = !tasksOpen;
-  if (tasksOpen) workOpen = false;
-  renderLobby();
-};
-
-$('catTabs').onclick = e => {
-  const btn = e.target.closest('.cat-tab');
-  if (!btn || btn.disabled) return;
-  activeCat = btn.dataset.cat;
-  const cat = ACTION_CATEGORIES.find(c => c.key === activeCat);
-  activeActionKey = null; // ao trocar de aba, nenhuma tarefa fica selecionada
-  renderLobby();
-};
-
-$('subOpts').onclick = e => {
-  const btn = e.target.closest('.sub-opt');
-  if (!btn) return;
-  activeActionKey = activeActionKey === btn.dataset.act ? null : btn.dataset.act; // tocar de novo desmarca
-
-  renderLobby();
-};
-
-$('assignBox').onclick = e => {
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r || (r.seasonReady || {})[me.id]) return;
-  const state = ensureColonyState(r, me.id);
-
-  const assignBtn = e.target.closest('.btn-assign');
-  if (assignBtn) {
-    if (String(state.capsuleBuilderId) === String(assignBtn.dataset.cid) && !(state.buildings.capsula > 0)) return;
-    if (!assignColonist(state, assignBtn.dataset.cid, activeActionKey)) return;
-    save(rooms);
-    renderLobby();
-    return;
-  }
-
-  // Fixar / desafixar o colono na ação selecionada
-  const pinBtn = e.target.closest('.btn-pin');
-  if (pinBtn) {
-    const cid = pinBtn.dataset.cid;
-    if (String(state.capsuleBuilderId) === String(cid) && !(state.buildings.capsula > 0)) return;
-    if (state.pinned[cid] === activeActionKey) {
-      delete state.pinned[cid]; // desafixa (a tarefa desta estação continua)
-    } else {
-      state.pinned[cid] = activeActionKey;
-      assignColonist(state, cid, activeActionKey); // já designa agora, se houver recurso
-    }
-    save(rooms);
-    renderLobby();
-    return;
-  }
-
-  const unassignBtn = e.target.closest('.btn-unassign');
-  if (unassignBtn) {
-    const cid = unassignBtn.dataset.cid;
-    if (String(state.capsuleBuilderId) === String(cid) && !(state.buildings.capsula > 0)) return;
-    const oldDef = state.assignments[cid] ? findActionDef(state.assignments[cid]) : null;
-    if (oldDef) refundCost(state.resources, actionCost(oldDef));
-    delete state.assignments[cid];
-    save(rooms);
-    renderLobby();
-  }
-};
-
-$('btnNextSeason').onclick = () => {
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r) return;
-  r.seasonReady = r.seasonReady || {};
-
-  if (r.seasonReady[me.id]) {
-    delete r.seasonReady[me.id];
-  } else {
-    r.seasonReady[me.id] = true;
-  }
-
-  // Se todos os jogadores confirmaram, resolve as tarefas e avança a estação
-  if (r.players.every(p => r.seasonReady[p.id])) {
-    resolveSeasonActions(r);
-    r.seasonReady = {};
-    r.seasonIdx = (r.seasonIdx || 0) + 1;
-    if (r.seasonIdx >= 4) {
-      r.seasonIdx = 0;
-      r.year = (r.year || 1) + 1;
-    }
-    triggerSeasonEvents(r);
-  }
-
-  save(rooms);
-  renderLobby();
-};
-
-/* ===== Eventos Globais da Sala ===== */
-$('btnStart').onclick = newMap;
-$('btnNewMap').onclick = newMap;
-$('btnLeaveGame').onclick = () => { leaveRoom(currentRoom); currentRoom = null; show('home'); };
-
-$('btnCreate').onclick = () => {
-  const n = $('name').value.trim();
-  if (!n) return $('msg').textContent = 'Digite seu nome.';
-  $('msg').textContent = '';
-  me.name = n;
-  enter(createRoom(n));
-};
-
-$('btnJoin').onclick = () => {
-  const n = $('name').value.trim();
-  const c = $('joinCode').value.trim().toUpperCase();
-  if (!n) return $('msg').textContent = 'Digite seu nome.';
-  if (c.length !== 4) return $('msg').textContent = 'O código tem 4 letras.';
-  me.name = n;
-  const err = joinRoom(c, n);
-  if (err) return $('msg').textContent = err;
-  $('msg').textContent = '';
-  enter(c);
-};
-
-$('btnLeave').onclick = () => { leaveRoom(currentRoom); currentRoom = null; show('home'); };
-bc.onmessage = () => { if (currentRoom) renderLobby(); };
-addEventListener('storage', () => { if (currentRoom) renderLobby(); });
-addEventListener('beforeunload', () => { if (currentRoom) leaveRoom(currentRoom); });
-
-const RACE_INFO = {
-  Humano: {
-    desc: 'Adaptáveis, versáteis e movidos pela curiosidade. Humanos mantêm equilíbrio em quase todas as áreas e se destacam na exploração e no cultivo.',
-    strengths: 'Curiosidade (6–10), Agricultura (5–9), Inteligência e Lenha (4–8).',
-    diet: '4 refeições por ano (refeições normais e pães; não come refeição vegetariana).'
-  },
-  'Robô': {
-    desc: 'Unidades sintéticas construídas para precisão e eficiência. Não sentem fome, mas têm pouca aptidão para tarefas orgânicas ou intuitivas.',
-    strengths: 'Tiro (6–10), Construção (6–10), Mineração, Medicina e Inteligência (5–9).',
-    diet: 'Não precisa se alimentar.'
-  },
-  Drakthar: {
-    desc: 'Guerreiros robustos de temperamento feroz e grande apetite. Dominam o combate corpo a corpo, a caça e o trabalho pesado.',
-    strengths: 'Corpo a Corpo (6–10), Caça (6–10), Mineração e Curiosidade (5–9).',
-    diet: '8 refeições por ano (refeições normais e pães; não come refeição vegetariana).'
-  },
-  Floraks: {
-    desc: 'Seres botânicos pacíficos que extraem energia do ambiente. Excelentes curandeiros, artesãos e estudiosos, mas evitam o combate.',
-    strengths: 'Medicina (6–10), Fabricação (5–9), Inteligência (5–9) e Agricultura (4–8).',
-    diet: 'Não precisa se alimentar.'
-  },
-  Nebulians: {
-    desc: 'Entidades etéreas de natureza sutil e dieta estritamente vegetariana. Possuem boa coordenação para coleta, mineração e culinária.',
-    strengths: 'Mineração (5–9), Tiro, Caça, Agricultura, Culinária e Medicina (4–8).',
-    diet: '6 refeições por ano — consomem Refeições Vegetarianas e Pães.'
-  }
-};
-
-function renderRaceButtons() {
-  const row = $('raceRow');
-  if (!row) return;
-  row.innerHTML = Object.keys(RACAS).map(r =>
-    `<button type="button" class="sec race-btn" data-race="${r}">${RACA_ICONS[r]} ${r}</button>`
-  ).join('');
-}
-
-$('raceRow').onclick = e => {
-  const btn = e.target.closest('.race-btn');
-  if (!btn) return;
-  const r = btn.dataset.race;
-  const info = RACE_INFO[r];
-  if (!info) return;
-  $('raceModal').style.display = 'flex';
-  $('raceModal').innerHTML = `
-    <div class="modal-sheet">
-      <div style="display:flex; justify-content:space-between; align-items:center">
-        <strong style="font-size:1.1rem">${RACA_ICONS[r]} ${r}</strong>
-        <button type="button" class="sec btn-race-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
-      </div>
-      <p style="font-size:.9rem; line-height:1.45; opacity:.9">${info.desc}</p>
-      <div class="planet-info">
-        <div><strong>⭐ Pontos fortes:</strong> ${info.strengths}</div>
-        <div><strong>🍽️ Alimentação:</strong> ${info.diet}</div>
-      </div>
-    </div>`;
-};
-
-$('raceModal').onclick = e => {
-  if (e.target === $('raceModal') || e.target.closest('.btn-race-close')) {
-    $('raceModal').style.display = 'none';
-  }
-};
-renderRaceButtons();
-
-
-let workOpen = false;
-let mapOpen = false;
-let mapSel = null;
-
-function renderWorkSheet(state, team, ready) {
-  const rows = team.map(c => {
-    const curKey = state.assignments[c.id];
-    const pinKey = (state.pinned || {})[c.id];
-    const curDef = curKey ? findActionDef(curKey) : null;
-    const pinDef = pinKey ? findActionDef(pinKey) : null;
-
-    let statusBadge = '';
-    let taskText = '';
-    let canClear = false;
-    let canUnpin = false;
-
-    if (curDef && pinKey === curKey) {
-      statusBadge = '<span class="hunger ok">📌 Fixado</span>';
-      taskText = curDef.label;
-      canClear = true;
-      canUnpin = true;
-    } else if (curDef) {
-      statusBadge = '<span class="hunger soon">⏳ Alocado momentaneamente</span>';
-      taskText = curDef.label + (pinDef ? ` <small style="color:#ffd54a">(fixado em ${pinDef.label})</small>` : '');
-      canClear = true;
-      canUnpin = Boolean(pinDef);
-    } else if (pinDef) {
-      statusBadge = '<span class="hunger hungry">😴 Em repouso (fixado sem recurso)</span>';
-      taskText = `Aguardando: ${pinDef.label}`;
-      canUnpin = true;
-    } else {
-      statusBadge = '<span class="hunger" style="color:#9fb0ff; border-color:#3a4496">😴 Em repouso</span>';
-      taskText = 'Nenhuma tarefa designada';
-    }
-
-    return `
-      <div class="assign-row">
-        <span style="display:flex; flex-direction:column; gap:3px; min-width:0">
-          <span>${RACA_ICONS[c.raca]} <strong>${cName(c)}</strong> <small style="opacity:.6">· ${c.raca}</small></span>
-          <span>${statusBadge}</span>
-          <small style="opacity:.85">${taskText}</small>
-        </span>
-        <span style="display:flex; gap:5px; flex-shrink:0">
-          ${canUnpin ? `<button type="button" class="sec btn-work-unpin" data-cid="${c.id}" style="padding:5px 8px; font-size:.75rem" ${ready ? 'disabled' : ''}>Desafixar</button>` : ''}
-          ${canClear ? `<button type="button" class="danger btn-work-clear" data-cid="${c.id}" style="padding:5px 8px; font-size:.75rem" ${ready ? 'disabled' : ''}>Liberar</button>` : ''}
-        </span>
-      </div>`;
-  }).join('');
-
-  return `
-    <div style="display:flex; justify-content:space-between; align-items:center">
-      <strong style="color:#9fb0ff">👷 Quadro de Trabalho</strong>
-      <small style="opacity:.7">${Object.keys(state.assignments || {}).length}/${team.length} ativos</small>
-    </div>
-    ${rows}
-  `;
-}
-
-function renderColonyMapModal(r) {
-  const cols = Object.fromEntries(r.players.map(p => [p.id, p.color || '#9fb0ff']));
-  const colonies = r.colonies || {};
-  const gridHtml = r.map.map((row, y) => row.map((t, x) => {
-    const owner = colonies[y + ',' + x];
-    const sel = mapSel && mapSel[0] === y && mapSel[1] === x ? ' sel' : '';
-    const style = owner ? ` style="border-color:${cols[owner]};box-shadow:0 0 10px ${cols[owner]}"` : '';
-    return `<div class="cell ${t}${sel}" data-y="${y}" data-x="${x}"${style}>${owner ? '🏠' : ICONS[t]}</div>`;
-  }).join('')).join('');
-
-  const chips = r.players.map(p =>
-    `<span style="color:${cols[p.id]}">● ${esc(p.name)}${p.id === me.id ? ' (você)' : ''}</span>`
-  ).join(' ');
-
-  let info = '<div style="font-size:.82rem; opacity:.75; text-align:center">Toque em uma célula do mapa para inspecionar.</div>';
-  if (mapSel) {
-    const [y, x] = mapSel;
-    const key = y + ',' + x;
-    const t = r.map[y][x];
-    const owner = colonies[key];
-    if (t === 'estrela') {
-      info = `<div class="planet-info"><strong>⭐ Estrela ${esc((r.starNames || {})[key] || 'Desconhecida')}</strong></div>`;
-    } else if (t === 'planeta') {
-      const meta = (r.planetMeta || {})[key] || { orbit: 'Desconhecida', clima: 'Temperado', oxigenio: '50%', recursos: 'Diversos' };
-      const ownerPlayer = owner ? r.players.find(p => p.id === owner) : null;
-      info = `
-        <div class="planet-info">
-          <div><strong>🪐 Planeta (${y + 1}, ${x + 1})</strong>${ownerPlayer ? ` · <span style="color:${cols[owner]}">🏠 Colônia de ${esc(ownerPlayer.name)}</span>` : ' · Desabitado'}</div>
-          <div>🌟 <strong>Órbita:</strong> ${esc(meta.orbit)} · 🌡️ <strong>Clima:</strong> ${esc(meta.clima)}</div>
-          <div>🫧 <strong>Oxigênio:</strong> ${esc(meta.oxigenio)} · ⛏️ <strong>Recursos:</strong> ${esc(meta.recursos)} · 🌙 <strong>Luas:</strong> ${meta.luas !== undefined ? meta.luas : 0}</div>
-        </div>`;
-    } else {
-      info = `<div class="planet-info"><strong>${ICONS[t] || '▫️'} ${NAMES[t]} (${y + 1}, ${x + 1})</strong></div>`;
-    }
-  }
-
-  return `
-    <div class="modal-sheet">
-      <div style="display:flex; justify-content:space-between; align-items:center">
-        <strong>🗺️ Mapa da Galáxia</strong>
-        <button type="button" class="sec btn-map-close" style="padding:5px 12px; font-size:.8rem">Fechar ✕</button>
-      </div>
-      <div style="display:flex; flex-wrap:wrap; gap:6px 12px; font-size:.82rem; justify-content:center">${chips}</div>
-      <div class="gmap-grid">${gridHtml}</div>
-      ${info}
-    </div>`;
-}
-
-$('btnWork').onclick = () => {
-  workOpen = !workOpen;
-  if (workOpen) tasksOpen = false;
-  renderLobby();
-};
-
-$('workSheet').onclick = e => {
-  const rooms = load(), r = rooms[currentRoom];
-  if (!r || (r.seasonReady || {})[me.id]) return;
-  const state = ensureColonyState(r, me.id);
-
-  const clearBtn = e.target.closest('.btn-work-clear');
-  if (clearBtn) {
-    const cid = clearBtn.dataset.cid;
-    if (String(state.capsuleBuilderId) === String(cid) && !(state.buildings.capsula > 0)) return;
-    const oldDef = state.assignments[cid] ? findActionDef(state.assignments[cid]) : null;
-    if (oldDef) refundCost(state.resources, actionCost(oldDef));
-    delete state.assignments[cid];
-    save(rooms); renderLobby(); return;
-  }
-  const unpinBtn = e.target.closest('.btn-work-unpin');
-  if (unpinBtn) {
-    if (String(state.capsuleBuilderId) === String(unpinBtn.dataset.cid) && !(state.buildings.capsula > 0)) return;
-    delete state.pinned[unpinBtn.dataset.cid];
-    save(rooms); renderLobby();
-  }
-};
-
-$('btnToggleMap').onclick = () => {
-  mapOpen = !mapOpen;
-  renderLobby();
-};
-
-$('mapModal').onclick = e => {
-  if (e.target === $('mapModal') || e.target.closest('.btn-map-close')) {
-    mapOpen = false;
-    renderLobby();
-    return;
-  }
-  const cell = e.target.closest('.cell');
-  if (cell) {
-    mapSel = [+cell.dataset.y, +cell.dataset.x];
-    renderLobby();
-  }
-};
-
-</script>
-</body>
-</html>
+        Colheita = Agricultura de quem plantou + Agricultura de quem colheu${climBonus ? ` + ${climBo
